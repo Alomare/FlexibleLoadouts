@@ -32,7 +32,3 @@ which is not included.
 
 - Built on [Bingus Shared Loader](https://github.com/CowboyBingus/BingusSharedLoader) by CowboyBingus.
 - Developed with Claude Opus 5.5 and the [HD2 Lua Mod Skill](https://github.com/MrChengl11/hd2-lua-mod-skill).
-
-## Nexus
-
-NEXUS_LINK_PLACEHOLDER
