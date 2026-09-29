@@ -1,0 +1,12 @@
+{
+    "name": "mods/alomare/stratagems_unleashed",
+    "guid": "6939fac7-0205-4e09-914b-827ab7913fe0",
+    "displayName": "Stratagems Unleashed",
+    "entry": "stratagems_unleashed.lua",
+    "version": "2",
+    "icon": "icon.png",
+    "description": "Pick the same stratagem more than once in the Hellpod loadout, vehicles included (two of the same mech, FRV or tank). Only your game is changed; teammates don't need the mod. After a game update it looks for the game code it needs; if that code changed, it turns itself off and the loadout works as normal.",
+    "requires": [
+        "Bingus Shared Loader v17 or newer"
+    ]
+}
