@@ -1,4 +1,4 @@
-<img width="1920" height="1080" alt="thumbnail3" src="https://github.com/user-attachments/assets/596f4279-8f29-4c92-9460-322131e5f4ed" />
+<img width="1920" height="1080" alt="thumbnail3" src="https://github.com/user-attachments/assets/ded41e14-9b4e-4086-80d2-e1c84400dc27" />
 
 # Stratagems Unleashed
 
