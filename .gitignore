@@ -1,6 +1,7 @@
 # Release builds and the Nexus page text
 build/
 nexus_description.txt
+todo.txt
 __pycache__/
 # One-off research builds
 research/recon*.lua
