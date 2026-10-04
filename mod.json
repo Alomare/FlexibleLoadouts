@@ -1,11 +1,11 @@
 {
-    "name": "mods/alomare/stratagems_unleashed",
+    "name": "mods/alomare/flexible_stratagems",
     "guid": "6939fac7-0205-4e09-914b-827ab7913fe0",
-    "displayName": "Stratagems Unleashed",
-    "entry": "stratagems_unleashed.lua",
-    "version": "2",
+    "displayName": "Flexible Stratagems",
+    "entry": "flexible_stratagems.lua",
+    "version": "3",
     "icon": "icon.png",
-    "description": "Freely repeat strategems in the Hellpod loadout. Vehicles and mechs included.",
+    "description": "Bring the same stratagem more than once in the Hellpod loadout, vehicles included. Choose a ruleset (Off, Less Restricted or Unleashed) with Mod Options Menu.",
     "requires": [
         "Bingus Shared Loader v17 or newer"
     ]

@@ -1,8 +1,9 @@
-"""Offline test of the Stratagems Unleashed release under LuaJIT, with the real game.dll dump as process memory.
+"""Offline test of the Flexible Stratagems release under LuaJIT, with the real game.dll dump as process memory.
 
 The dump (_research/game_25480438.dll, offsets == RVAs) is mapped at a fake base, so the code signatures are
 matched against the game's own code; the globals they lead to (screen stack, loadout screen, stratagem list, offers
-table, stratagem table) and the two native functions (the list's marker and select) are simulated. "Other builds"
+table, stratagem table, synced lists, scene clock) and the two native functions (the list's marker and select) are
+simulated, and so is Mod Options Menu where a test picks a ruleset. "Other builds"
 are made by moving signatures' code elsewhere in the image (rip-relative and call operands fixed up), changing a
 structure offset inside moved code, or breaking code.
 
@@ -17,12 +18,16 @@ from pathlib import Path
 from lupa.luajit21 import LuaRuntime
 
 MOD = Path(__file__).resolve().parent.parent
-SOURCE = (MOD / 'stratagems_unleashed.lua').read_text(encoding='utf-8')
-DUMP = MOD.parent / '_research' / 'game_25480438.dll'
+ROOT = MOD.parents[1]
+MAIN = (MOD / 'flexible_stratagems.lua').read_text(encoding='utf-8')
+DUMP = ROOT / '_research' / 'game_25480438.dll'
 sys.path.insert(0, str(MOD / 'research'))
-sys.path.insert(0, str(MOD.parent / 'tools'))
+sys.path.insert(0, str(ROOT / 'tools'))
 import signatures  # noqa: E402
 import sigspec  # noqa: E402
+from entry import entry_text  # noqa: E402
+
+SOURCE = entry_text(MOD, 'flexible_stratagems.lua')  # what ships: the texts ahead of the script
 
 HARNESS = r'''
 local logdir, image = ...
@@ -218,6 +223,35 @@ function fake.frame_step(n)
     for _ = 1, n or 1 do fake.frame = fake.frame + 1; update(0.016) end
 end
 function fake.press(key) fake.down[key] = true; fake.frame_step(1); fake.down[key] = false end
+-- Mod Options Menu (version 2 unless given): records the registration; fake.menu_set(v) applies a value like the
+-- player's APPLY does.
+function fake.install_menu(value, version)
+    local menu = {api = 1, version = version or 2, values = {}, callbacks = {}}
+    function menu.register_option(id, spec)
+        menu.spec, menu.id = spec, id
+        if menu.values[id] == nil then menu.values[id] = value or spec.default end
+        return true
+    end
+    function menu.get(id) return menu.values[id] end
+    function menu.on_change(id, fn) menu.callbacks[id] = fn end
+    ModOptionsMenu = menu
+    fake.menu = menu
+end
+function fake.menu_set(value)
+    local m = fake.menu
+    m.values[m.id] = value
+    m.callbacks[m.id](value, m.id)
+end
+function fake.set_clock(us) write_mem(CLK + 0x18, le64(us)) end
+function fake.entry_u64(player, index, offset)  -- player: 1-based synced list
+    local v = ffi.new('uint64_t[1]')
+    ffi.copy(v, read_mem(SYS + (player - 1) * 0x1690 + 0x1c0 + index * 0x30 + offset, 8), 8)
+    return tonumber(v[0])
+end
+function fake.set_entry_end(player, index, us)
+    write_mem(SYS + (player - 1) * 0x1690 + 0x1c0 + index * 0x30 + 0x18, le64(us))
+end
+function fake.set_info(t, offset, v) write_mem(INFO + t * 0x200 + offset, le32(v)) end
 '''
 
 results = []
@@ -229,7 +263,7 @@ def check(cond, what):
 
 
 def new_game(image, prepare=''):
-    logdir = tempfile.mkdtemp(prefix='su_rel_')
+    logdir = tempfile.mkdtemp(prefix='fs_rel_')
     lua = LuaRuntime(unpack_returned_tuples=True)
     lua.execute(HARNESS, logdir, image)
     if callable(prepare):
@@ -277,31 +311,41 @@ def reads_per_frame(f, frames):
 
 
 def main():
-    body = SOURCE.split('\n', 1)[1]
     for pattern in (r'//', r'\bgoto\b', r'&(?!&)', r'~(?!=)', r'<<', r'>>', r'math\.type', r'string\.pack'):
-        check(not re.search(pattern, body.replace('-->', '')), f'no Lua 5.3+ construct {pattern!r}')
-    check(SOURCE.startswith('-- HD2-Addon: mods/alomare/stratagems_unleashed\n'), 'declaration line first')
-    check(not re.search(r'f10|snapshot|save_raw|recon|DuplicateStratagems', SOURCE, re.I), 'no research leftovers')
+        check(not re.search(pattern, MAIN.split('\n', 1)[1].replace('-->', '')), f'no Lua 5.3+ construct {pattern!r}')
+    check(SOURCE.startswith('-- HD2-Addon: mods/alomare/flexible_stratagems\n'), 'declaration line first')
+    version = re.search(r"local M = \{version = '([^']+)'", MAIN).group(1)
+    check(not re.search(r'f10|snapshot|save_raw|recon|DuplicateStratagems|StratagemsUnleashed',
+                        MAIN.replace(version, ''), re.I), 'no research leftovers or old names')
     image = DUMP.read_bytes()
-    for name, rva, text_, fields in sigspec.build(signatures.SPECS):
+    for name, rva, text_, fields, _optional in sigspec.build(signatures.SPECS):
         SIG_ROWS[name] = (rva, text_, fields)
-    in_script = re.findall(r"name = '(\w+)', rva = (0x[0-9a-f]+), text = '([^']+)'", SOURCE)
+    in_script = re.findall(r"name = '(\w+)', rva = (0x[0-9a-f]+),(?: optional = true,)? text = '([^']+)'", MAIN)
     check([(n, int(r, 16), t) for n, r, t in in_script] == [(n, v[0], v[1]) for n, v in SIG_ROWS.items()],
           'the script carries the signatures research/signatures.py builds (%d)' % len(in_script))
+    check(not sigspec.check(MOD / 'flexible_stratagems.lua', sigspec.build(signatures.SPECS)),
+          'the script carries the current signature engine (tools/sigscan.lua)')
 
-    # 1. This build: OK status; idle outside the loadout screen (a check every 10 frames).
+    # 1. This build, no Mod Options Menu: Less Restricted; idle outside the loadout screen.
     lua, logs = new_game(image)
     f = lua.globals().fake
     f.frame_step(1)
-    status = text(logs / 'StratagemsUnleashed_STATUS.log')
-    version = re.search(r"local M = \{version = '([^']+)'", SOURCE).group(1)
-    check(status.startswith('OK - duplicate stratagems and vehicles can be picked') and 'Stratagems Unleashed %s' % version in status
-          and "Game code found at this game version's addresses" in status, 'status OK on this build: %r' % status)
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check(status.startswith('OK - up to two of each stratagem') and 'Flexible Stratagems %s' % version in status
+          and 'Ruleset: Less Restricted (default; Mod Options Menu not found)' in status
+          and "Game code found at this game version's addresses" in status and 'Copy cooldown: active' in status,
+          'status OK on this build, Less Restricted by default: %r' % status)
     check(f.base_updates == 1, 'update chained')
-    rate = reads_per_frame(f, 100)
-    check(rate <= 0.2 and not f.game_writes, 'outside the loadout screen: %.2f reads per frame, no writes' % rate)
+    rate = reads_per_frame(f, 120)
+    check(rate <= 1 and not f.game_writes, 'outside the loadout screen: %.2f reads per frame, no writes' % rate)
 
-    # 2. Loadout screen, another category: a few reads per frame, nothing written.
+    # 2. Unleashed (Mod Options Menu). Loadout screen, another category: a few reads per frame, nothing written.
+    lua, logs = new_game(image, 'fake.install_menu(3)')
+    f = lua.globals().fake
+    f.frame_step(1)
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check(status.startswith('OK - any stratagem can be picked any number of times')
+          and 'Ruleset: Unleashed (Mod Options Menu)' in status, 'Unleashed from Mod Options Menu: %r' % status.splitlines()[:3])
     f.set_flags(12, 0x00200021)
     f.set_flags(9, 0x80100000)
     f.set_flags(20, 0x0000000a)
@@ -333,13 +377,13 @@ def main():
     check(not f.selects and f.selected() == 0xb009, 'no pick yet: the selection (focus) is left alone')
 
     # 5. A pick (Railcannon again): the refresh refuses the loadout's stratagems again; the selection left on the
-    #    Railcannon is cleared once, so its next pick plays the sound.
+    #    Railcannon is cleared once, so its next pick plays the sound. Unleashed: two Railcannons stay pickable.
     f.set_selected(0xb005)
     f.set_block(0, lua.table(5, 5, 12, 3))
     f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(0, 1, 0, 1, 0, 0))
     f.frame_step(1)
     check(f.selects == 1 and f.selected() == 0 and f.list_selectable() == '1,1,1,1,1,0',
-          'after a pick: selection cleared, loadout marked again')
+          'after a pick: selection cleared, loadout marked again (two copies still selectable when Unleashed)')
     f.set_selected(0xb005)
     f.frame_step(5)
     check(f.selects == 1 and f.selected() == 0xb005, 'the selection is cleared once per pick (controller focus kept)')
@@ -375,8 +419,113 @@ def main():
     f.frame_step(10)
     check(f.flags(12) == 0x00400001, 'and restored')
 
-    # 7. Errors: the vehicle bits are restored; five errors stop the mod.
-    lua, logs = new_game(image, "fake.natives[0x18d1440] = function() error('boom') end")
+    # 7. Less Restricted (the default): a stratagem in the loadout once is marked back, one already there twice
+    #    stays refused; vehicles are lifted too (a second copy of a vehicle).
+    lua, logs = new_game(image, 'fake.install_menu(2)')
+    f = lua.globals().fake
+    f.frame_step(1)
+    f.set_flags(12, 0x00200021)
+    f.set_block(0, lua.table(5, 12, 9, 3))
+    f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(0, 0, 0, 1, 0, 0))
+    f.set_category(10)
+    f.open_screen(0)
+    f.frame_step(10)
+    check(f.list_selectable() == '1,1,1,1,1,0' and f.flags(12) == 0x21,
+          'Less Restricted, one of each: all marked back, vehicle bits lifted: %s' % f.list_selectable())
+    f.set_block(0, lua.table(5, 5, 12, 12))
+    f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(0, 1, 0, 1, 1, 0))
+    f.frame_step(2)
+    check(f.list_selectable() == '0,1,0,1,1,0', 'two Railcannons and two of a vehicle: both stay refused: %s' % f.list_selectable())
+    marked = f.marked
+    f.frame_step(20)
+    check(f.marked == marked, 'refused by the copy limit: not marked again every frame')
+    f.set_block(0, lua.table(5, 12, 12, 3))
+    f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(0, 1, 0, 1, 0, 0))
+    f.frame_step(2)
+    check(f.list_selectable() == '1,1,0,1,1,0', 'a copy replaced: the Railcannon is pickable again: %s' % f.list_selectable())
+
+    # 8. Rulesets change in game: Off gives the vehicle bits back at once and marks nothing; Unleashed marks the
+    #    two-copy stratagem back.
+    f.menu_set(1)
+    f.frame_step(1)
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check(f.flags(12) == 0x00200021 and status.startswith('IDLE - ruleset Off'), 'Off: vehicle bits restored, status IDLE: %r'
+          % status.splitlines()[:1])
+    writes, marked = f.game_writes, f.marked
+    f.set_block(0, lua.table(5, 5, 12, 12))
+    f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(0, 1, 0, 1, 1, 0))
+    f.frame_step(20)
+    check(f.game_writes == writes and f.marked == marked and f.list_selectable() == '0,1,0,1,1,0',
+          'Off: nothing written or marked')
+    f.menu_set(3)
+    f.frame_step(12)  # the screen is looked for every 10 frames while the mod isn't serving it
+    check(f.list_selectable() == '1,1,1,1,1,0' and f.flags(12) == 0x21, 'Unleashed: both marked back: %s' % f.list_selectable())
+
+    # 9. Mod Options Menu texts: functions (version 2), Off as the game's own word, within the menu's limits.
+    spec = f.menu.spec
+    check(spec.type == 'choice' and spec.default == 2 and callable(spec.label) and spec.label() == 'Ruleset'
+          and spec.mod() == 'Flexible Stratagems' and spec.choices[1] == 'Off' and spec.choices[2]() == 'Less Restricted'
+          and spec.choices[3]() == 'Unleashed' and len(spec.description()) <= 400,
+          'option texts: functions, Off plain, description %d characters' % len(spec.description()))
+    lua, logs = new_game(image, 'fake.install_menu(nil, 1)')
+    f = lua.globals().fake
+    f.frame_step(1)
+    spec = f.menu.spec
+    check(spec.label == 'Ruleset' and spec.choices[2] == 'Less Restricted', 'Mod Options Menu v1.0: plain strings')
+
+    # 10. The copy cooldown (Less Restricted): the local player's list (peer 0x1111) is found among the synced
+    #     lists; when a stratagem's cooldown starts, its copy gets 10 seconds, kept against a sync that resets it.
+    #     Eagles (additional stratagem = Eagle Rearm) and shared-cooldown stratagems are left alone.
+    lua, logs = new_game(image)
+    f = lua.globals().fake
+    f.set_info(9, 0xc8, 0x31)    # Eagle 500kg: its family shares the rearm
+    f.set_info(20, 0x94, 1)      # a shared-cooldown stratagem
+    f.set_clock(50000000)
+    f.set_synced(lua.table(lua.table(0x2222, lua.table(lua.table(5, 1, 0), lua.table(5, 1, 0))),
+                           lua.table(0x1111, lua.table(lua.table(5, 1, 0), lua.table(5, 1, 0), lua.table(9, 2, 0),
+                                                       lua.table(9, 2, 0), lua.table(20, 1, 0), lua.table(20, 1, 0),
+                                                       lua.table(12, 1, 0)))))
+    f.frame_step(13)
+    writes = f.game_writes or 0
+    f.set_entry_end(2, 0, 110000000)   # Railcannon 1 used: 60 s
+    f.frame_step(7)
+    check(f.entry_u64(2, 1, 0x18) == 60000000 and f.entry_u64(2, 1, 0x10) == 50000000 and f.entry_u64(2, 1, 0x20) == 50000000,
+          'Railcannon used: its copy gets 10 s (start, base = now; end = now + 10 s): %d' % f.entry_u64(2, 1, 0x18))
+    check(f.entry_u64(1, 0, 0x18) == 0 and f.entry_u64(1, 1, 0x18) == 0, "another player's list is left alone")
+    f.set_entry_end(2, 2, 80000000)    # Eagle used
+    f.set_entry_end(2, 4, 90000000)    # shared-cooldown stratagem used
+    f.frame_step(7)
+    check(f.entry_u64(2, 3, 0x18) == 0 and f.entry_u64(2, 5, 0x18) == 0, 'Eagles and shared cooldowns: no copy cooldown')
+    f.set_clock(55000000)
+    f.set_entry_end(2, 1, 0)           # a sync from the host resets the copy
+    f.frame_step(2)
+    check(f.entry_u64(2, 1, 0x18) == 60000000, 'reset by a sync within the 10 s: written again')
+    f.set_clock(61000000)
+    f.frame_step(7)
+    f.set_entry_end(2, 1, 0)
+    f.frame_step(7)
+    check(f.entry_u64(2, 1, 0x18) == 0, 'after the 10 s: left alone')
+    f.set_entry_end(2, 0, 0)           # the first one ready again
+    f.frame_step(7)
+    f.set_entry_end(2, 1, 200000000)   # the copy used, with a long cooldown
+    f.frame_step(7)
+    check(f.entry_u64(2, 0, 0x18) == 71000000, 'the copy used: the first one gets 10 s: %d' % f.entry_u64(2, 0, 0x18))
+    f.set_entry_end(2, 0, 300000000)   # the first one used again while its copy is on a longer cooldown
+    f.frame_step(7)
+    check(f.entry_u64(2, 1, 0x18) == 200000000, 'a copy on a longer cooldown keeps it')
+
+    # 11. The copy cooldown follows the ruleset: none when Unleashed.
+    lua, logs = new_game(image, 'fake.install_menu(3)')
+    f = lua.globals().fake
+    f.set_clock(50000000)
+    f.set_synced(lua.table(lua.table(0x1111, lua.table(lua.table(5, 1, 0), lua.table(5, 1, 0)))))
+    f.frame_step(13)
+    f.set_entry_end(1, 0, 110000000)
+    f.frame_step(13)
+    check(f.entry_u64(1, 1, 0x18) == 0 and not f.game_writes, 'Unleashed: no copy cooldown, nothing written')
+
+    # 12. Errors: the vehicle bits are restored; five errors stop the mod.
+    lua, logs = new_game(image, "fake.install_menu(3); fake.natives[0x18d1440] = function() error('boom') end")
     f = lua.globals().fake
     f.frame_step(1)
     f.set_flags(12, 0x00200021)
@@ -385,21 +534,22 @@ def main():
     f.set_category(10)
     f.open_screen(0)
     f.frame_step(20)
-    status = text(logs / 'StratagemsUnleashed_STATUS.log')
-    check(f.flags(12) == 0x00200021 and status.startswith('STOPPED - repeated errors') and 'boom' in text(logs / 'StratagemsUnleashed.log'),
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check(f.flags(12) == 0x00200021 and status.startswith('STOPPED - repeated errors') and 'boom' in text(logs / 'FlexibleStratagems.log'),
           'errors restore the vehicle bits and stop the mod after five: %r' % status.splitlines()[:1])
     before = f.base_updates
     f.frame_step(3)
     check(f.base_updates == before + 3, 'update still chained after stopping')
 
-    # 8. Another build where code moved: the marker, select and the screen query are elsewhere (the refresh calls the
-    #    moved marker), and the screen slot is +0xb8 instead of +0xb0. The mod finds them by search, follows the new
-    #    slot, and calls the natives at their new addresses.
+    # 13. Another build where code moved: the marker, select and the screen query are elsewhere (the refresh calls the
+    #     moved marker), and the screen slot is +0xb8 instead of +0xb0. The mod finds them by search, follows the new
+    #     slot, and calls the natives at their new addresses.
     # select starts 16 bytes into the second search chunk: inside the first chunk's overlap too, counted once.
     new = {'marker': FREE, 'select': 0x1000 + 0x400000 + 0x10, 'screen': FREE + 0x200}
 
     def moved_build(lua):
         f = lua.globals().fake
+        lua.execute('fake.install_menu(3)')
         for name in new:
             rva, garbage = broken(name)
             f.patch(rva, garbage)
@@ -416,13 +566,13 @@ def main():
     f = lua.globals().fake
     started = time.perf_counter()
     frames = 0
-    while not text(logs / 'StratagemsUnleashed_STATUS.log') and frames < 60:
+    while not text(logs / 'FlexibleStratagems_STATUS.log') and frames < 60:
         f.frame_step(1)
         frames += 1
     elapsed = time.perf_counter() - started
-    status = text(logs / 'StratagemsUnleashed_STATUS.log')
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
     print('INFO search of game.dll: %d frames, %.2f s in this LuaJIT (%.0f ms per frame)' % (frames, elapsed, elapsed * 1000 / frames))
-    check(status.startswith('OK - duplicate stratagems') and 'Game code found by search (3 moved: screen, marker, select)' in status,
+    check(status.startswith('OK - any stratagem') and 'Game code found by search (3 moved: screen, marker, select)' in status,
           'moved code found by search: %r' % status.splitlines()[-1:])
     f.set_flags(12, 0x00200021)
     f.set_block(0, lua.table(5, 5, 12))
@@ -438,14 +588,13 @@ def main():
     check(f.list_selectable() == '1,1,1' and f.flags(12) == 0x21 and calls == {hex(new['marker']), hex(new['select'])},
           'the loadout is served through the moved screen slot, marker and select: %s %s' % (f.list_selectable(), sorted(calls)))
 
-    # 9. Builds the mod can't trust: nothing runs, the status says why.
+    # 14. Builds the mod can't trust: nothing runs, the status says why.
     def build(*edits):
         def prepare(lua):
             f = lua.globals().fake
             for rva, data in edits:
                 f.patch(rva, data)
         return prepare
-    marker_rva = SIG_ROWS['marker'][0]
     kind_mech = SIG_ROWS['kind_mech']
     flags_at = kind_mech[0] + kind_mech[2]['flags'][1][0]
     cases = (
@@ -455,7 +604,7 @@ def main():
         (build((flags_at, (0x108).to_bytes(4, 'little'))), '"flags" differs between signatures'),
         (build(broken('marker'), (FREE, moved(image, 'marker', FREE))), 'the refresh does not call the marker'),
         (build((SIG_ROWS['refresh_a'][0] + SIG_ROWS['refresh_a'][2]['list_count'][1][1], (0x92988).to_bytes(4, 'little'))),
-         '"list_count" in code "refresh_a" is inconsistent'),
+         'code "refresh_a" field "list_count" occurrences disagree'),
     )
     for prepare, why in cases:
         lua, logs = new_game(image, prepare)
@@ -465,11 +614,18 @@ def main():
         f.set_category(10)
         f.open_screen(0)
         f.frame_step(40)
-        status = text(logs / 'StratagemsUnleashed_STATUS.log')
+        status = text(logs / 'FlexibleStratagems_STATUS.log')
         check(status.startswith('NOT AVAILABLE - this game version is not supported (%s)' % why) and not f.game_writes
               and not len(f.calls) and f.list_selectable() == '0,0', 'another build (%s): nothing written or called: %r'
               % (why, status.splitlines()[:1]))
-    del marker_rva
+
+    # 15. Without the cooldown code only the copy cooldown is off; the picker still works.
+    lua, logs = new_game(image, build(broken('cooldown_copy')))
+    f = lua.globals().fake
+    f.frame_step(40)
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check(status.startswith('OK - up to two') and 'Copy cooldown: NOT AVAILABLE (code "cooldown_copy" not found)' in status,
+          'cooldown code missing: only the copy cooldown is off: %r' % status.splitlines()[-1:])
 
     passed = sum(results)
     print(f'{passed}/{len(results)} passed')
