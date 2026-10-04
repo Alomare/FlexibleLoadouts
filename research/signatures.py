@@ -1,16 +1,19 @@
-"""Stratagems Unleashed's code signatures (NOTES.md, "Finding the game's code"): checked against the game.dll dump
-and written into stratagems_unleashed.lua between the SIGNATURES markers.
+"""Flexible Stratagems' code signatures (NOTES.md, "Finding the game's code"): checked against the game.dll dump
+and written into flexible_stratagems.lua between the SIGNATURES markers, with the shared signature engine
+(tools/sigscan.lua) between the SIGNATURE ENGINE markers.
 
-Usage (from the workspace root): python -B StratagemsUnleashed/research/signatures.py [--check]
+Usage (from the workspace root): python -B mods/FlexibleStratagems/research/signatures.py [--check]
+  --check   only verify: every signature matches once and the script's blocks are current (exit 1 otherwise)
 """
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
+MOD = Path(__file__).resolve().parents[1]
+ROOT = MOD.parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import sigspec  # noqa: E402
 
-SCRIPT = ROOT / 'StratagemsUnleashed' / 'stratagems_unleashed.lua'
+SCRIPT = MOD / 'flexible_stratagems.lua'
 
 SPECS = [
     # A loadout screen query: mov rax,[screen stack]; mov rcx,[rax+slot]; cmp dword [rcx+local index],-1; setne al.
@@ -48,15 +51,36 @@ SPECS = [
      'fields': {'flags': (0x104, 'u32')}},
     {'name': 'kind_tank', 'start': 0x146e4f5, 'end': 0x146e50b,
      'fields': {'flags': (0x104, 'u32')}},
+    # Less Restricted's cooldown rule (optional: without these the rule is off). The stratagem use handler
+    # (0xb9a6d0): a shared-cooldown stratagem (info +0x94) copies its cooldown to every entry of its type in every
+    # player's synced list (48-byte entries: type +0x1c0, start +0x1d0, end +0x1d8, base +0x1e0; count +0x7c0).
+    {'name': 'cooldown_copy', 'start': 0xb9a983, 'end': 0xb9aa13, 'optional': True,
+     'fields': {'shared': (0x94, 'u32'), 'players': (0x2d200, 'u32'), 'player_stride': (0x1690, 'u32'),
+                'synced': (0x347ce50, 'rip'), 'entry_count': (0x7c0, 'u32'), 'entry_type': (0x1c0, 'u32'),
+                'cd_end': (0x1d8, 'u32'), 'cd_start': (0x1d0, 'u32'), 'cd_base': (0x1e0, 'u32')}},
+    # ... the used entry's cooldown start = now, from the scene clock (u64 microseconds at clock + 0x18).
+    {'name': 'cooldown_start', 'start': 0xb9a7cc, 'end': 0xb9a801, 'optional': True,
+     'fields': {'entry_type': (0x1c0, 'u32'), 'clock': (0x3326348, 'rip'), 'clock_now': (0x18, 'u8'),
+                'cd_start': (0x1d0, 'u32')}},
+    # ... and the Eagle family (Eagle Rearm, or info +0xc8 additional stratagem == Eagle Rearm) shares one cooldown.
+    {'name': 'eagle_family', 'start': 0xb9a8af, 'end': 0xb9a8c2, 'optional': True,
+     'fields': {'additional': (0xc8, 'u32'), 'eagle_rearm': (0x31, 'u8')}},
+    # The local peer id (session + 0xb398), which keys the local player's synced list.
+    {'name': 'self_peer', 'start': 0x5bae80, 'end': 0x5bae99, 'optional': True,
+     'fields': {'session': (0x347cef0, 'rip'), 'peer': (0xb398, 'u32')}},
 ]
 
 
 def main():
     rows = sigspec.build(SPECS)
     sigspec.report(rows)
-    if '--check' not in sys.argv:
-        sigspec.write(SCRIPT, rows)
-        print('written to', SCRIPT.name)
+    if '--check' in sys.argv:
+        problems = sigspec.check(SCRIPT, rows)
+        for p in problems:
+            print('STALE:', p)
+        sys.exit(1 if problems else 0)
+    sigspec.write(SCRIPT, rows)
+    print('written to', SCRIPT.name)
 
 
 if __name__ == '__main__':
