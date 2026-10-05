@@ -51,23 +51,57 @@ SPECS = [
      'fields': {'flags': (0x104, 'u32')}},
     {'name': 'kind_tank', 'start': 0x146e4f5, 'end': 0x146e50b,
      'fields': {'flags': (0x104, 'u32')}},
-    # Less Restricted's cooldown rule (optional: without these the rule is off). The stratagem use handler
-    # (0xb9a6d0): a shared-cooldown stratagem (info +0x94) copies its cooldown to every entry of its type in every
-    # player's synced list (48-byte entries: type +0x1c0, start +0x1d0, end +0x1d8, base +0x1e0; count +0x7c0).
-    {'name': 'cooldown_copy', 'start': 0xb9a983, 'end': 0xb9aa13, 'optional': True,
-     'fields': {'shared': (0x94, 'u32'), 'players': (0x2d200, 'u32'), 'player_stride': (0x1690, 'u32'),
-                'synced': (0x347ce50, 'rip'), 'entry_count': (0x7c0, 'u32'), 'entry_type': (0x1c0, 'u32'),
-                'cd_end': (0x1d8, 'u32'), 'cd_start': (0x1d0, 'u32'), 'cd_base': (0x1e0, 'u32')}},
-    # ... the used entry's cooldown start = now, from the scene clock (u64 microseconds at clock + 0x18).
-    {'name': 'cooldown_start', 'start': 0xb9a7cc, 'end': 0xb9a801, 'optional': True,
-     'fields': {'entry_type': (0x1c0, 'u32'), 'clock': (0x3326348, 'rip'), 'clock_now': (0x18, 'u8'),
-                'cd_start': (0x1d0, 'u32')}},
-    # ... and the Eagle family (Eagle Rearm, or info +0xc8 additional stratagem == Eagle Rearm) shares one cooldown.
-    {'name': 'eagle_family', 'start': 0xb9a8af, 'end': 0xb9a8c2, 'optional': True,
-     'fields': {'additional': (0xc8, 'u32'), 'eagle_rearm': (0x31, 'u8')}},
-    # The local peer id (session + 0xb398), which keys the local player's synced list.
-    {'name': 'self_peer', 'start': 0x5bae80, 'end': 0x5bae99, 'optional': True,
-     'fields': {'session': (0x347cef0, 'rip'), 'peer': (0xb398, 'u32')}},
+
+    # Ready with fewer than 4 stratagems (optional: without these that feature is off). The screen calls the local
+    # panel's (screen + 0x53a78) ready handler while the stratagem list is closed (+0x273990 == 0) ...
+    {'name': 'ready_call', 'start': 0x146d9fb, 'end': 0x146da17, 'optional': True,
+     'fields': {'list_open': (0x273990, 'u32'), 'panels': (0x53a78, 'u32'), 'ready_handler': (0x189c250, 'call')}},
+    # ... which counts the four slot widgets (flags at panel + 0xfcc0, 0x12a8 apart, type at +4) and refuses while
+    # fewer are filled than min(owned, 4 - disabled): it flashes each empty slot (byte +0x18 set to 1) and plays an
+    # error sound through the UI sound function ...
+    {'name': 'ready_slots', 'start': 0x189c3b8, 'end': 0x189c497, 'optional': True,
+     'fields': {'slot_flags': (0xfcc0, 'u32'), 'flash': (0x18, 'u8'), 'slot_stride': (0x12a8, 'u32'),
+                'ui_sound': (0x1327f50, 'call')}},
+    # ... else toggles: for the local panel (+0x1ee0c), an idle timer (+0x1ee14 == -1.0) starts at 1.75 s with the
+    # ready sound (the last one when every other player (count +0x84; entity [+0xe8 + i * 8] + 8, the panel's at
+    # +0x1edf8) is ready: bit 3 or 11 of players + 0x3ac + i * 0x20); the panel update then sets bit 3 of the local
+    # player's flags. Otherwise the timer goes back to -1.0 and that bit is cleared.
+    {'name': 'ready_toggle', 'start': 0x189c4d0, 'end': 0x189c5fa, 'optional': True,
+     'fields': {'player_count': (0x84, 'u32'), 'panel_entity': (0x1edf8, 'u32'), 'panel_local': (0x1ee0c, 'u32'), 'ready_timer': (0x1ee14, 'u32'), 'players': (0x3326468, 'rip'),
+                'player_active': (0x88, 'u32'), 'player_entries': (0xe8, 'u32'), 'player_flags': (0x3ac, 'u32'),
+                'ui_sound': (0x1327f50, 'call'), 'timer_idle': (0xbf800000, 'u32'),
+                'ready_time': (0x3fe00000, 'u32'), 'sound_ready_last': (0x7947920, 'u32'),
+                'sound_ready': (0x4d777731, 'u32')}},
+
+    # Keep the list open after a replacement (optional). After a pick the equip handler looks for the first enabled,
+    # empty slot (types at screen + 0x6373c; not in grid mode 1, +0x6f290); with one it focuses it in the panel's grid (+0x595f0) and edits it
+    # (+0x281c), else it plays a sound and closes the list.
+    # The pick itself ends with the slots written to the loadout block (0x189d120(panel, -1)); after the slot search,
+    # the list refresh, the grid refresh and the save of the block (screen + 0x10 + index * 0x9f0).
+    {'name': 'equip_tail', 'start': 0x146e5f6, 'end': 0x146e6da, 'optional': True,
+     'fields': {'panels': (0x53a78, 'u32'), 'slots_changed': (0x189d120, 'call'), 'refresh': (0x18d1890, 'call'),
+                'list_grid': (0xd2850, 'u32'), 'grid_refresh': (0x18d7210, 'call'), 'block_stride': (0x9f0, 'u32'),
+                'block_base': (0x10, 'u8'), 'save': (0x1751350, 'call'), 'grid_mode': (0x6f290, 'u32'), 'slot_types': (0x6373c, 'u32'), 'slot_stride': (0x12a8, 'u32'), 'ui_sound': (0x1327f50, 'call'),
+                'close_list': (0x146f3b0, 'call'), 'local_index': (0x27d0, 'u32'), 'list': (0xd2f20, 'u32'),
+                'grid': (0x595f0, 'u32'), 'focus_call': (0x1895770, 'call'), 'edit_slot': (0x281c, 'u32')}},
+    # The list opener (the game's own, for the focused slot): its start, which sets list_open.
+    {'name': 'open_list', 'start': 0x146e9d0, 'end': 0x146ea64, 'optional': True,
+     'fields': {'panels': (0x53a78, 'u32'), 'list_open': (0x273990, 'u32')}},
+    # The slot setter (panel, slot, item): the slot widget (panel + 0x5b78 + 0x8ec0 + slot * 0x12a8) gets the item's
+    # type through the widget setter (type 0: empty). The grid offset (0x5b78) stays literal: a twin setter for another
+    # grid (+0x220) differs only there.
+    {'name': 'set_slot', 'start': 0x189d050, 'end': 0x189d09a, 'optional': True,
+     'fields': {'slot_stride': (0x12a8, 'u32'), 'widget_base': (0x8ec0, 'u32'),
+                'set_widget': (0x1893600, 'call')}},
+    # The list's update: its scroll (+0x92960, clamped to [0, +0x8c0]), then the layout of the rows it shows.
+    {'name': 'list_update', 'start': 0x18cf84f, 'end': 0x18cf8ff, 'optional': True,
+     'fields': {'scroll': (0x92960, 'u32'), 'scroll_max': (0x8c0, 'u32'), 'layout': (0x18d2b60, 'call')}},
+    # The list's focus setter (list, offer): the cell holding the offer among the list's offer ids.
+    {'name': 'list_focus', 'start': 0x18d1280, 'end': 0x18d12da, 'optional': True,
+     'fields': {'ids': (0x92990, 'u32')}},
+    # The grid's focus setter (focused slot at grid + 0xd96c).
+    {'name': 'focus', 'start': 0x1895770, 'end': 0x1895787, 'optional': True,
+     'fields': {'grid_focus': (0xd96c, 'u32')}},
 ]
 
 
