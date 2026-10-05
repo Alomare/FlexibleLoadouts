@@ -1,34 +1,36 @@
 -- HD2-Addon: mods/alomare/flexible_stratagems
 -- Flexible Stratagems by Alomare (formerly Stratagems Unleashed).
 --
--- Lets the Hellpod loadout take the same stratagem more than once, vehicles included, under a ruleset chosen in Mod
--- Options Menu (escape menu > MODS; without it: Less Restricted):
---   Off              the game's own rules; the mod reads nothing but the screen check and writes nothing.
---   Less Restricted  up to two of each stratagem; when one is used (its cooldown starts), its copy gets a 10 second
---                    cooldown unless it already has a longer one. Eagles share their rearm already, and stratagems
---                    with a shared cooldown copy theirs already: those are left alone.
---   Unleashed        any stratagem any number of times, no extra cooldown.
+-- Lets the Hellpod loadout take the same stratagem more than once, vehicles included: up to 2, 3 or 4 copies of each,
+-- set by a Mod Options Menu slider (escape menu > MODS; without it: 2).
 -- Two rules are lifted in the stratagem list, on this game only (the loadout then goes out through the game's own
 -- sync, so teammates need nothing):
 --   * a stratagem already in the loadout is kept selectable: the list's refresh marks the loadout's stratagems as
---     equipped, and a press on an equipped item is refused; the mod marks them back through the game's own marker,
---     so picking one again runs the game's normal equip (slot, sync, save). Less Restricted marks back only those in
---     the loadout once. After such a pick the list's selection is cleared the game's way, since a press on the
---     selected item plays no pick sound;
+--     equipped, and a press on an equipped item is refused; the mod marks back those with fewer copies than the limit
+--     through the game's own marker, so picking one again runs the game's normal equip (slot, sync, save). After such
+--     a pick the list's selection is cleared the game's way, since a press on the selected item plays no pick sound;
 --   * one mech, one FRV and one tank: the equip handler moves a second one of a kind into the slot holding the first.
 --     Its kind bits (stratagem info flags: 0x100000 mech, 0x200000 FRV, 0x400000 tank) are cleared while the list is
---     open and put back when it closes (or the screen closes, the ruleset changes, or on any error).
+--     open and put back when it closes (or the screen closes, or on any error).
+-- More, around the list:
+--   * ready with empty slots: the ready handler refuses while fewer slots are filled than min(owned, 4), flashing the
+--     empty ones (slots marked disabled, as by a mission modifier, don't count). The game's update runs before the
+--     mod's, so the mod sees the flash start and toggles the ready the handler's way;
+--   * after a replacement in a full loadout (slot 1 to 3), the equip handler closes the list; the mod focuses the
+--     next slot and opens the list again, as the handler does while slots are still empty, then focuses the
+--     stratagem just picked and puts the list's scroll back where it was;
+--   * Clear Stratagems (a Mod Bindings Menu key): empties the four slots through the slot widgets, then writes and
+--     saves the loadout the way a pick does.
 -- Game updates: every address and structure offset the mod uses is read from the game's own code, found by code
 -- signatures (at this build's addresses first, else by a search of game.dll spread over a few frames). Anything not
--- found, found twice or inconsistent turns the mod off (or, for the cooldown signatures, only the copy cooldown), and
--- the loadout works as normal. The verdict is the first line of
+-- found, found twice or inconsistent turns the mod off, and the loadout works as normal. The verdict is the first line of
 -- %LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\FlexibleStratagems_STATUS.log.
 if rawget(_G, 'FlexibleStratagems') then return end
 
 local ffi = require('ffi')
 local bit = require('bit')
 
-local M = {version = '3', frames = 0, errors = 0}
+local M = {version = '4', frames = 0, errors = 0}
 rawset(_G, 'FlexibleStratagems', M)
 
 local loader = rawget(_G, 'CowboyBingusModLoader')
@@ -60,14 +62,24 @@ local SIGS = {
      fields = {flags = {'u32', {19}}}},
     {name = 'kind_tank', rva = 0x146e4f5, text = '48 8B C3 45 85 C0 74 ?? 4B 8B 04 DE F7 80 ?? ?? ?? ?? 00 00 40 00',
      fields = {flags = {'u32', {14}}}},
-    {name = 'cooldown_copy', rva = 0xb9a983, optional = true, text = '41 83 BF ?? ?? ?? ?? 00 0F 84 ?? ?? ?? ?? 45 33 C9 44 39 8B ?? ?? ?? ?? 0F 86 ?? ?? ?? ?? 41 8B C1 45 33 C0 48 69 D0 ?? ?? ?? ?? 48 03 15 ?? ?? ?? ?? 44 39 82 ?? ?? ?? ?? 76 ?? 66 90 8B 84 1F ?? ?? ?? ?? 4B 8D 0C 40 48 03 C9 39 84 CA ?? ?? ?? ?? 75 ?? 48 8B 84 1F ?? ?? ?? ?? 48 89 84 CA ?? ?? ?? ?? 48 8B 84 1F ?? ?? ?? ?? 48 89 84 CA ?? ?? ?? ?? 48 8B 84 1F ?? ?? ?? ?? 48 89 84 CA ?? ?? ?? ?? 41 FF C0 44 3B 82 ?? ?? ?? ?? 72 ??',
-     fields = {shared = {'u32', {3}}, players = {'u32', {20}}, player_stride = {'u32', {39}}, synced = {'rip', {46}, {50}}, entry_count = {'u32', {53, 138}}, entry_type = {'u32', {64, 78}}, cd_end = {'u32', {88, 96}}, cd_start = {'u32', {104, 112}}, cd_base = {'u32', {120, 128}}}},
-    {name = 'cooldown_start', rva = 0xb9a7cc, optional = true, text = '41 8B C0 48 8D 3C 40 48 C1 E7 04 49 03 FE 8B 94 1F ?? ?? ?? ?? 85 D2 74 ?? 4D 8B 3C D2 45 84 C9 74 ?? 48 8B 05 ?? ?? ?? ?? 48 8B 48 ?? 48 89 8C 1F ?? ?? ?? ??',
-     fields = {entry_type = {'u32', {17}}, clock = {'rip', {37}, {41}}, clock_now = {'u8', {44}}, cd_start = {'u32', {49}}}},
-    {name = 'eagle_family', rva = 0xb9a8af, optional = true, text = '83 FA ?? 74 ?? 41 83 BF ?? ?? ?? ?? ?? 0F 85 ?? ?? ?? ??',
-     fields = {additional = {'u32', {8}}, eagle_rearm = {'u8', {2, 12}}}},
-    {name = 'self_peer', rva = 0x5bae80, optional = true, text = '44 8B 4A 50 45 85 C9 74 ?? 48 8B 05 ?? ?? ?? ?? 33 C9 48 8B 90 ?? ?? ?? ??',
-     fields = {session = {'rip', {12}, {16}}, peer = {'u32', {21}}}},
+    {name = 'ready_call', rva = 0x146d9fb, optional = true, text = '0F B6 83 ?? ?? ?? ?? 33 FF 84 C0 75 ?? 48 8D 8B ?? ?? ?? ?? 49 8B D7 E8 ?? ?? ?? ??',
+     fields = {list_open = {'u32', {3}}, panels = {'u32', {16}}, ready_handler = {'call', {24}, {28}}}},
+    {name = 'ready_slots', rva = 0x189c3b8, optional = true, text = '48 81 C7 ?? ?? ?? ?? 0F 29 BC 24 A0 00 00 00 0F 57 F6 F3 0F 10 3D ?? ?? ?? ?? 44 0F 29 84 24 90 00 00 00 F3 44 0F 10 05 ?? ?? ?? ?? 44 0F 29 8C 24 80 00 00 00 F3 44 0F 10 0D ?? ?? ?? ?? 85 F6 0F 84 ?? ?? ?? ?? 83 7F 04 00 75 ?? 80 7F ?? 00 75 ?? 0F B6 07 C0 E8 02 A8 01 75 ?? 0F 57 C0 F3 0F 11 74 24 40 66 0F 7F 44 24 70 48 8D 8F 10 F5 FF FF 41 0F 28 C0 C7 44 24 68 83 82 82 3E 8B 44 24 68 48 8D 54 24 50 89 44 24 58 41 B1 01 48 8D 44 24 70 41 0F 14 C1 48 89 44 24 38 0F 28 D7 F3 0F 11 74 24 30 C6 44 24 28 01 C7 44 24 20 02 00 00 00 F2 0F 11 44 24 50 E8 ?? ?? ?? ?? C6 47 ?? 01 FF CE FF C3 48 81 C7 ?? ?? ?? ?? 83 FB 04 0F 82 ?? ?? ?? ?? BA 01 05 0F F5 E8 ?? ?? ?? ??',
+     fields = {slot_flags = {'u32', {3}}, flash = {'u8', {78, 191}}, slot_stride = {'u32', {200}}, ui_sound = {'call', {219}, {223}}}},
+    {name = 'ready_toggle', rva = 0x189c4d0, optional = true, text = '4C 8B 05 ?? ?? ?? ?? 8B 87 ?? ?? ?? ?? 45 8B 90 ?? ?? ?? ?? 45 85 D2 74 ?? 4D 8D 88 ?? ?? ?? ?? 49 81 C0 ?? ?? ?? ?? 49 8B 08 39 41 08 74 ?? 83 FB FF 74 ?? 41 8B 11 8B CA C1 E9 03 80 E1 01 75 ?? C1 EA 0B 80 E2 01 74 ?? FF C3 49 83 C0 08 49 83 C1 20 41 3B DA 72 ?? B3 01 80 BF ?? ?? ?? ?? 00 0F 84 ?? ?? ?? ?? F3 0F 10 87 ?? ?? ?? ?? 0F 2E 05 ?? ?? ?? ?? 7A ?? 75 ?? 32 C0 EB ?? 32 DB EB ?? 8B 97 FC ED 01 00 0F 57 DB 41 B8 63 19 1D 5D F3 0F 11 5C 24 20 E8 ?? ?? ?? ?? 48 8B 15 ?? ?? ?? ?? C7 87 ?? ?? ?? ?? ?? ?? ?? ?? 83 BA ?? ?? ?? ?? 01 72 ?? 48 8B 8A ?? ?? ?? ?? F6 41 14 01 74 ?? 83 A2 ?? ?? ?? ?? F7 BA 01 05 0F F5 E8 ?? ?? ?? ?? 48 8B B4 24 F8 00 00 00 B8 04 00 00 00 48 81 C4 D8 00 00 00 5F 5B C3 8B D0 E8 ?? ?? ?? ?? 8B 97 FC ED 01 00 84 C0 75 ?? 0F 57 DB 41 B8 A4 50 E1 97 F3 0F 11 5C 24 20 E8 ?? ?? ?? ?? C7 87 ?? ?? ?? ?? ?? ?? ?? ?? 84 DB 74 ?? BA ?? ?? ?? ?? EB ?? BA ?? ?? ?? ??',
+     fields = {player_count = {'u32', {16}}, panel_entity = {'u32', {9}}, panel_local = {'u32', {92}}, ready_timer = {'u32', {107, 165, 274}}, players = {'rip', {3, 159}, {7, 163}}, player_active = {'u32', {175}}, player_entries = {'u32', {35, 185}}, player_flags = {'u32', {28, 197}}, ui_sound = {'call', {208}, {212}}, timer_idle = {'u32', {169}}, ready_time = {'u32', {278}}, sound_ready_last = {'u32', {287}}, sound_ready = {'u32', {294}}}},
+    {name = 'equip_tail', rva = 0x146e5f6, optional = true, text = '48 8D 8F ?? ?? ?? ?? 48 C7 C2 FF FF FF FF E8 ?? ?? ?? ?? 83 BF ?? ?? ?? ?? 01 74 ?? 48 8B 2D ?? ?? ?? ?? 4C 8D 9F ?? ?? ?? ?? 41 0F B6 43 FC C0 E8 02 A8 01 75 ?? 41 8B 1B 8D 43 FF 3D 94 00 00 00 0F 87 ?? ?? ?? ?? 8B D3 48 8B CD E8 ?? ?? ?? ?? 48 85 C0 75 ?? 49 8B 04 DE 8B 40 04 85 C0 74 ?? FF C6 49 81 C3 ?? ?? ?? ?? 83 FE 04 72 ?? BA 11 34 75 97 E8 ?? ?? ?? ?? 48 8B CF E8 ?? ?? ?? ?? 8B 87 ?? ?? ?? ?? 48 8D 8F ?? ?? ?? ?? 48 69 D0 ?? ?? ?? ?? 48 83 C2 ?? 48 03 D7 E8 ?? ?? ?? ?? 48 8D 8F ?? ?? ?? ?? E8 ?? ?? ?? ?? 8B 87 ?? ?? ?? ?? 48 69 C8 ?? ?? ?? ?? 48 83 C1 ?? 48 03 CF E8 ?? ?? ?? ?? E9 ?? ?? ?? ?? 83 FE FF 74 ?? 48 8D 8F ?? ?? ?? ?? 8B D6 E8 ?? ?? ?? ?? 89 B7 ?? ?? ?? ??',
+     fields = {panels = {'u32', {3}}, slots_changed = {'call', {15}, {19}}, refresh = {'call', {157}, {161}}, list_grid = {'u32', {164}}, grid_refresh = {'call', {169}, {173}}, block_stride = {'u32', {145, 182}}, block_base = {'u8', {152, 189}}, save = {'call', {194}, {198}}, grid_mode = {'u32', {21}}, slot_types = {'u32', {38}}, slot_stride = {'u32', {102}}, ui_sound = {'call', {117}, {121}}, close_list = {'call', {125}, {129}}, local_index = {'u32', {131, 175}}, list = {'u32', {138}}, grid = {'u32', {211}}, focus_call = {'call', {218}, {222}}, edit_slot = {'u32', {224}}}},
+    {name = 'open_list', rva = 0x146e9d0, optional = true, text = '40 57 48 81 EC A0 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 70 80 B9 08 28 00 00 00 48 8B F9 0F 85 ?? ?? ?? ?? F7 81 D8 F2 0C 00 00 00 00 08 74 ?? 8B 81 88 F3 0C 00 48 C1 E8 0B A9 FF 07 00 00 0F 85 ?? ?? ?? ?? 0F B6 81 91 39 27 00 48 89 9C 24 B0 00 00 00 48 8D 99 ?? ?? ?? ?? 48 89 AC 24 B8 00 00 00 BD 04 00 00 00 48 89 B4 24 C0 00 00 00 8B F5 0F 29 BC 24 90 00 00 00 44 0F 29 84 24 80 00 00 00 C6 81 ?? ?? ?? ?? 01 88 81 92 39 27 00',
+     fields = {panels = {'u32', {91}}, list_open = {'u32', {137}}}},
+    {name = 'set_slot', rva = 0x189d050, optional = true, text = '83 FA 04 0F 83 ?? ?? ?? ?? 48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 41 8B D8 8B F2 48 8D B9 78 5B 00 00 8B CB E8 ?? ?? ?? ?? 48 69 CE ?? ?? ?? ?? 8B D0 48 81 C1 ?? ?? ?? ?? 48 03 CF E8 ?? ?? ?? ?? 80 BF 78 D9 00 00 00',
+     fields = {slot_stride = {'u32', {46}}, widget_base = {'u32', {55}}, set_widget = {'call', {63}, {67}}}},
+    {name = 'list_update', rva = 0x18cf84f, optional = true, text = 'F3 0F 10 81 ?? ?? ?? ?? F3 0F 58 C1 0F 2F C8 F3 0F 11 81 ?? ?? ?? ?? 76 ?? C7 81 ?? ?? ?? ?? 00 00 00 00 EB ?? F3 0F 10 89 ?? ?? ?? ?? 0F 2F C1 76 ?? F3 0F 11 89 ?? ?? ?? ?? F3 0F 10 81 6C 29 09 00 F3 0F 59 05 ?? ?? ?? ?? C7 81 70 29 09 00 00 00 00 40 F3 0F 11 81 6C 29 09 00 48 81 C1 00 29 09 00 0F 28 CE E8 ?? ?? ?? ?? 0F B6 83 FA 28 09 00 0F B6 8B 02 29 09 00 88 8B FA 28 09 00 84 C0 75 ?? 84 C9 74 ?? 80 BB F8 28 09 00 00 74 ?? F3 0F 10 83 C8 08 00 00 F3 0F 59 83 ?? ?? ?? ?? F3 0F 11 83 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ??',
+     fields = {scroll = {'u32', {4, 19, 27, 54, 164}}, scroll_max = {'u32', {41, 156}}, layout = {'call', {172}, {176}}}},
+    {name = 'list_focus', rva = 0x18d1280, optional = true, text = '48 89 5C 24 18 55 56 57 48 83 EC 20 44 8B 89 14 1F 09 00 33 ED 48 8B F9 44 8B C5 8B F5 45 85 C9 74 ?? 0F 1F 40 00 66 66 0F 1F 84 00 00 00 00 00 8B C6 8B DD 8B 8C 87 18 23 09 00 85 C9 74 ?? 90 41 8B C0 39 94 87 ?? ?? ?? ?? 74 ?? 41 FF C0 FF C3 3B D9 72 ?? FF C6 41 3B F1',
+     fields = {ids = {'u32', {70}}}},
+    {name = 'focus', rva = 0x1895770, optional = true, text = '48 89 5C 24 08 57 48 83 EC 20 8B 81 ?? ?? ?? ?? 48 8B F9 8B DA 3B C2',
+     fields = {grid_focus = {'u32', {12}}}},
 }
 -- END SIGNATURES
 
@@ -329,16 +341,18 @@ local VEHICLE_BITS = 0x700000                            -- literal in kind_mech
 local IDLE_POLL = 10       -- frames between loadout screen checks while it is not open
 local REQUIRED = {'screen', 'category', 'refresh_call', 'refresh_a', 'refresh_b', 'offers_count', 'marker', 'select',
                   'kind_frv', 'kind_mech', 'kind_tank'}
-local COOLDOWN_SIGS = {'cooldown_copy', 'cooldown_start', 'eagle_family', 'self_peer'}
 
--- Rulesets: the Mod Options Menu choice's value is the index.
-local RULESETS = {'off', 'less', 'unleashed'}
-local RULESET_NAMES = {off = 'Off', less = 'Less Restricted', unleashed = 'Unleashed'}
-local DEFAULT_RULESET = 2
-local MAX_COPIES = {less = 2}           -- stratagems of one type a loadout may hold (none: unlimited)
-local COPY_COOLDOWN = 10000000          -- Less Restricted: microseconds a copy waits after the other one is used
-local COOLDOWN_POLL = 6                 -- frames between checks of the local player's cooldowns
-local OPTION_ID = 'alomare.flexible_stratagems.ruleset'
+-- Copies of one stratagem a loadout may hold: the Mod Options Menu slider (4 copies: no limit in 4 slots).
+local COPIES = {min = 2, max = 4, default = 2}
+local OPTION_ID = 'alomare.flexible_stratagems.max_copies'
+-- Literal in the ready signatures: a slot's type (+4 from its flags), the local player's flag byte (entry + 0x14),
+-- the players' flag stride, and the ready bits (3: ready, 11: also counted as ready by the handler).
+local SLOT_TYPE, PLAYER_LOCAL, PLAYER_STRIDE, READY_BIT, READY_ALSO = 4, 0x14, 0x20, 8, 0x800
+local READY_SIGS = {'ready_call', 'ready_slots', 'ready_toggle'}
+local ADVANCE_SIGS = {'equip_tail', 'open_list', 'focus'}
+local SCROLL_SIGS = {'list_update', 'list_focus'}
+local CLEAR_SIGS = {'equip_tail', 'set_slot'}
+local CLEAR_BINDING = 'alomare.flexible_stratagems.clear'
 
 ---------------------------------------------------------------------------------------
 -- Logging and status
@@ -453,7 +467,7 @@ local function buf_pointer(buf, offset) return pointer_value(ffi.cast('uint64_t 
 
 local code = nil  -- the signature engine
 local L = {}      -- field name -> value (offsets) or rva (globals, functions)
-local SCREEN, LIST, BLOCK, SYNCED = {}, {}, {}, {}
+local SCREEN, LIST, BLOCK = {}, {}, {}
 
 -- Checks the pieces fit together (the engine already made every field agree across signatures).
 local function read_layout()
@@ -489,26 +503,72 @@ local function read_layout()
     return true
 end
 
--- The copy cooldown's layout (synced lists, clock, local peer), or nil and why it is unavailable.
-local function read_cooldown_layout()
-    for _, name in ipairs(COOLDOWN_SIGS) do
-        if not code.found[name] then return nil, string.format('code "%s" %s', name, code.missing[name] or 'not found') end
+-- The list extras (ready with empty slots, the list kept open after a replacement and its scroll, the
+-- clear key): each is on only when all its code is found and fits; otherwise only that extra is off.
+local EXTRA = {ready = false, advance = false, scroll = false, clear = false}
+local WIDGET = {}  -- the slot widgets: offset from the grid, type offset
+
+local function read_extras()
+    local found = code.found
+    local function missing(names)
+        for _, name in ipairs(names) do
+            if not found[name] then return string.format('code "%s" %s', name, code.missing[name] or 'not found') end
+        end
     end
-    for _, k in ipairs({'synced', 'players', 'player_stride', 'entry_count', 'entry_type', 'cd_start', 'cd_end',
-                        'cd_base', 'clock', 'clock_now', 'session', 'peer', 'shared', 'additional', 'eagle_rearm'}) do
-        if not L[k] then return nil, 'value "' .. k .. '" unavailable' end
+    local why = missing(READY_SIGS)
+    if not why then
+        for _, part in ipairs({'ready_slots', 'ready_toggle'}) do
+            if found[part] < L.ready_handler or found[part] > L.ready_handler + 0x800 then
+                why = part .. ' outside the ready handler'
+            end
+        end
     end
-    -- Entry fields as offsets from the entry type; one span from the first entry to the count is read per check.
-    local first = L.entry_type
-    SYNCED.start, SYNCED.finish, SYNCED.base = L.cd_start - first, L.cd_end - first, L.cd_base - first
-    SYNCED.count = L.entry_count - first
-    if SYNCED.count < BLOCK_MAX * ENTRY_SIZE or SYNCED.count > 0x1000 or L.player_stride < L.entry_count + 4 then
-        return nil, 'synced list layout'
+    if not why and (L.slot_stride < 0x100 or L.slot_stride > 0x10000 or L.flash >= L.slot_stride) then why = 'slot layout' end
+    if not why then
+        local ok, fn = pcall(ffi.cast, 'void (*)(uint64_t, uint32_t)', native.base + L.ui_sound)
+        if ok then native.sound = fn else why = 'native function sound unavailable' end
     end
-    for _, k in ipairs({'start', 'finish', 'base'}) do
-        if SYNCED[k] < 8 or SYNCED[k] + 8 > ENTRY_SIZE then return nil, 'synced entry layout (' .. k .. ')' end
+    EXTRA.ready, EXTRA.ready_why = not why, why
+    why = missing(ADVANCE_SIGS)
+    if not why and L.focus_call ~= found.focus then why = 'the equip handler does not focus with the setter found' end
+    if not why and L.slot_flags and L.slot_types ~= L.panels + L.slot_flags + SLOT_TYPE then why = 'slot layout' end
+    if not why then
+        SCREEN.edit = L.edit_slot - L.local_index
+        if SCREEN.edit < 0 or SCREEN.edit > 0x1000 then why = 'screen head layout (edited slot)' end
     end
-    return true
+    if not why then
+        local ok1, open = pcall(ffi.cast, 'void (*)(uint64_t)', code:address('open_list'))
+        local ok2, focus = pcall(ffi.cast, 'void (*)(uint64_t, uint32_t)', code:address('focus'))
+        if ok1 and ok2 then native.open, native.focus = open, focus else why = 'native functions unavailable' end
+    end
+    if not why then SCREEN.head_size = math.max(SCREEN.head_size, SCREEN.edit + 4) end
+    EXTRA.advance, EXTRA.advance_why = not why, why
+    -- The scroll kept when the list opens again.
+    why = (not EXTRA.advance and 'needs the list kept open') or missing(SCROLL_SIGS)
+    if not why then
+        local ok1, layout = pcall(ffi.cast, 'void (*)(uint64_t)', native.base + L.layout)
+        local ok2, list_focus = pcall(ffi.cast, 'uint8_t (*)(uint64_t, uint32_t)', code:address('list_focus'))
+        if ok1 and ok2 then native.layout, native.list_focus = layout, list_focus else why = 'native functions unavailable' end
+    end
+    EXTRA.scroll, EXTRA.scroll_why = not why, why
+    -- Clear Stratagems: the slot widgets (grid + widget base + slot * stride, type at +0x128c on this build).
+    why = missing(CLEAR_SIGS)
+    if not why then
+        WIDGET.base = L.grid + L.widget_base
+        WIDGET.type = L.slot_types - WIDGET.base
+        if WIDGET.type < 4 or WIDGET.type >= L.slot_stride then why = 'slot widget layout' end
+        if not why and L.slot_flags and L.slot_flags + SLOT_TYPE ~= L.slot_types - L.panels then why = 'slot widget layout' end
+    end
+    if not why then
+        local casts = {set_widget = {'void (*)(uint64_t, uint32_t)', L.set_widget},
+                       slots_changed = {'void (*)(uint64_t, int64_t)', L.slots_changed},
+                       save = {'void (*)(uint64_t)', L.save}, close = {'void (*)(uint64_t)', L.close_list}}
+        for name, c in pairs(casts) do
+            local ok, fn = pcall(ffi.cast, c[1], native.base + c[2])
+            if ok then native[name] = fn else why = 'native function ' .. name .. ' unavailable' end
+        end
+    end
+    EXTRA.clear, EXTRA.clear_why = not why, why
 end
 
 ---------------------------------------------------------------------------------------
@@ -542,16 +602,16 @@ local function offer_map()
 end
 
 ---------------------------------------------------------------------------------------
--- Settings: the ruleset (Mod Options Menu, which may load before or after this addon)
+-- Settings: the copy limit (Mod Options Menu, which may load before or after this addon)
 
-local settings = {ruleset = RULESETS[DEFAULT_RULESET], menu = nil, dirty = false}  -- dirty: status to rewrite
+local settings = {max_copies = COPIES.default, menu = nil, dirty = false}  -- dirty: status to rewrite
 
 -- Mod Options Menu v1.1 and later (version 2) take texts as functions and call them whenever the escape menu opens,
 -- so they follow the game's language; v1.0 takes strings with byte limits, where a translation that does not fit
 -- stays English.
 local text_functions = {}
-local function option_text(menu, key, bytes)
-    if (tonumber(menu.version) or 1) >= 2 then
+local function host_text(menu, functions_from, key, bytes)
+    if (tonumber(menu.version) or 1) >= functions_from then
         local fn = text_functions[key]
         if not fn then fn = function() return tr(key) end; text_functions[key] = fn end
         return fn
@@ -560,29 +620,31 @@ local function option_text(menu, key, bytes)
     return #value <= bytes and value or tr.english[key]
 end
 
-local ruleset_changed  -- defined with the list below
+local function option_text(menu, key, bytes) return host_text(menu, 2, key, bytes) end
 
-local function set_ruleset(value)
-    local ruleset = RULESETS[value] or RULESETS[DEFAULT_RULESET]
-    if ruleset == settings.ruleset then return end
-    note('Ruleset: ' .. RULESET_NAMES[ruleset])
-    settings.ruleset = ruleset
-    ruleset_changed()
+local copies_changed  -- defined with the list below
+
+local function set_max_copies(value)
+    value = math.floor(tonumber(value) or COPIES.default)
+    value = math.max(COPIES.min, math.min(COPIES.max, value))
+    if value == settings.max_copies then return end
+    note('Copies per stratagem: ' .. value)
+    settings.max_copies = value
+    copies_changed()
 end
 
 local function connect_menu()
     local menu = rawget(_G, 'ModOptionsMenu')
     if type(menu) ~= 'table' or menu.api ~= 1 then return false end
     settings.menu = menu
-    -- OFF is shown in the game's own translation when passed as plain English.
     local ok, done, why = pcall(menu.register_option, OPTION_ID, {
-        type = 'choice', mod = option_text(menu, 'option.mod', 40), label = option_text(menu, 'option.ruleset.label', 64),
-        choices = {'Off', option_text(menu, 'option.ruleset.less', 48), option_text(menu, 'option.ruleset.unleashed', 48)},
-        default = DEFAULT_RULESET, description = option_text(menu, 'option.ruleset.description', 400)})
+        type = 'slider', mod = option_text(menu, 'option.mod', 40), label = option_text(menu, 'option.copies.label', 64),
+        min = COPIES.min, max = COPIES.max, step = 1, default = COPIES.default,
+        description = option_text(menu, 'option.copies.description', 400)})
     if ok and done then
-        pcall(menu.on_change, OPTION_ID, function(value) set_ruleset(value) end)
+        pcall(menu.on_change, OPTION_ID, function(value) set_max_copies(value) end)
         local read_ok, value = pcall(menu.get, OPTION_ID)
-        set_ruleset(read_ok and value)
+        set_max_copies(read_ok and value)
         note('Mod Options Menu connected (version ' .. tostring(menu.version or 1) .. ')')
     else
         note('Option not registered: ' .. tostring(ok and why or done))
@@ -644,7 +706,7 @@ local function make_buffers()
     buffers.head = ffi.new('uint8_t[?]', SCREEN.head_size)
     buffers.list = ffi.new('uint8_t[?]', LIST.span_size)
     buffers.block = ffi.new('uint8_t[?]', BLOCK.count - BLOCK.entries + 4)
-    if SYNCED.count then buffers.synced = ffi.new('uint8_t[?]', SYNCED.count + 4) end
+    buffers.byte = ffi.new('uint8_t[1]')
 end
 
 -- The loadout's stratagems as {offer id = copies}, plus the entries as a string (to notice picks).
@@ -690,11 +752,11 @@ local function service_list(screen, index)
         if selected ~= 0 and copies[selected] then native.select(list, 0) end
     end
     visit.block = block
-    local limit = MAX_COPIES[settings.ruleset]
+    local limit = settings.max_copies
     local kept = {}
     for _, i in ipairs(refused) do
         local offer = buf_u32(list_buf, LIST.ids + i * 4)
-        if copies[offer] and (not limit or copies[offer] < limit) then
+        if copies[offer] and copies[offer] < limit then
             native.mark(list, offer, 1)
         else
             kept[#kept + 1] = i
@@ -703,121 +765,157 @@ local function service_list(screen, index)
     visit.refused = #kept > 0 and table.concat(kept, ',') or nil
 end
 
-ruleset_changed = function()
-    -- The list is recomputed under the new rules; Off gives the vehicle bits back at once.
-    restore_vehicles()
+copies_changed = function()
+    -- The refused items are looked at again under the new limit.
     visit.refused = nil
     settings.dirty = true
 end
 
 ---------------------------------------------------------------------------------------
--- Less Restricted's copy cooldown: when a stratagem's cooldown starts, its copies in the local player's synced list
--- (the live mission state) get a 10 second cooldown, written the way the game copies a shared cooldown (start, end,
--- base). The copy is kept on it for those 10 seconds in case a sync from the host resets it.
+-- Ready with empty slots
 
-local cd = {available = false, player = nil, layout = nil, ends = {}, holds = {}, copyable = {}}
+local ready = {flash = nil, now = {}}  -- the local panel's slot flash bytes last frame (nil: not watched)
 
-local function clock_now()
-    local clock = global(L.clock)
-    local v = clock and read(clock + L.clock_now, 8)
-    if not v then return nil end
-    local lo, hi = u32(v, 0), u32(v, 4)
-    return hi * 4294967296 + lo
-end
-
--- Whether a copy of type t should get the cooldown: not the Eagle family, not a shared-cooldown stratagem.
-local function copyable(t)
-    local known = cd.copyable[t]
-    if known ~= nil then return known end
-    local info = info_of(t)
-    local additional = info and u32(read(info + L.additional, 4))
-    local shared = info and u32(read(info + L.shared, 4))
-    local ok = info ~= nil and t ~= L.eagle_rearm and additional ~= L.eagle_rearm and shared == 0
-    cd.copyable[t] = ok
-    note(string.format('Copy cooldown for stratagem %d: %s', t, ok and 'yes' or 'no (Eagle or shared cooldown)'))
-    return ok
-end
-
--- The local player's synced list address, or nil (cached; checked by its peer id each time).
-local function local_list()
-    local system = global(L.synced)
-    local session = global(L.session)
-    local peer = session and read(session + L.peer, 8)
-    local players = system and u32(read(system + L.players, 4))
-    if not peer or not players or players == 0 or players > 16 then return nil end
-    if cd.player and cd.player < players and read(system + cd.player * L.player_stride, 8) == peer then
-        return system + cd.player * L.player_stride
-    end
-    cd.player = nil
-    for i = 0, players - 1 do
-        if read(system + i * L.player_stride, 8) == peer then
-            cd.player = i
-            note('Local player: synced list ' .. i .. ' of ' .. players)
-            return system + i * L.player_stride
+-- Whether every other player is ready, as the handler decides which ready sound plays.
+local function others_ready(panel, players)
+    local count = u32(read(players + L.player_count, 4))
+    local own = u32(read(panel + L.panel_entity, 4))
+    if not count or count > 16 then return false end
+    for i = 0, count - 1 do
+        local entry = pointer(read(players + L.player_entries + i * 8, 8))
+        if not entry or u32(read(entry + 8, 4)) ~= own then
+            local flags = u32(read(players + L.player_flags + i * PLAYER_STRIDE, 4)) or 0
+            if bit.band(flags, READY_BIT + READY_ALSO) == 0 then return false end
         end
     end
+    return true
 end
 
-local function hold_write(list, h)
-    local entry = list + L.entry_type + h.index * ENTRY_SIZE
-    write(entry + SYNCED.start, u64_bytes(h.start))
-    write(entry + SYNCED.base, u64_bytes(h.start))
-    write(entry + SYNCED.finish, u64_bytes(h.until_))
-end
-
-local function service_cooldowns()
-    if settings.ruleset ~= 'less' or not cd.available then
-        if next(cd.holds) or cd.layout then cd.holds, cd.ends, cd.layout = {}, {}, nil end
+-- The handler's toggle for the local panel: an idle timer starts the ready (the panel update sets the ready bit when
+-- it runs out); otherwise the ready is cancelled (the refusal already played the cancel sound, the same one).
+local function toggle_ready(panel, empty)
+    local own = read(panel + L.panel_local, 1)
+    local timer = u32(read(panel + L.ready_timer, 4))
+    local players = global(L.players)
+    if not own or own:byte() == 0 or not timer or not players then return end
+    if timer == L.timer_idle then
+        local last = others_ready(panel, players)
+        write(panel + L.ready_timer, u32_bytes(L.ready_time))
+        native.sound(0, last and L.sound_ready_last or L.sound_ready)
+        note(string.format('Ready with %d empty slot(s)%s', empty, last and ' (last player)' or ''))
         return
     end
-    if M.frames % COOLDOWN_POLL ~= 0 and not next(cd.holds) then return end
-    local list = local_list()
-    if not list or not read_into(buffers.synced, list + L.entry_type, SYNCED.count + 4) then
-        cd.holds, cd.ends, cd.layout = {}, {}, nil
+    write(panel + L.ready_timer, u32_bytes(L.timer_idle))
+    local entries = pointer(read(players + L.player_entries, 8))
+    local mine = entries and read(entries + PLAYER_LOCAL, 1)
+    local flags = u32(read(players + L.player_flags, 4))
+    if (u32(read(players + L.player_active, 4)) or 0) >= 1 and mine and mine:byte() % 2 == 1 and flags
+       and bit.band(flags, READY_BIT) ~= 0 then
+        write(players + L.player_flags, u32_bytes(flags - READY_BIT))
+    end
+    note(string.format('Ready cancelled (%d empty slot(s))', empty))
+end
+
+-- While the list is closed: a flash starting on an empty slot is the handler refusing a ready press.
+local function service_ready(screen, list_open)
+    if list_open then ready.flash = nil; return end
+    local base = screen + L.panels + L.slot_flags + L.flash
+    local now, started, flashing = ready.now, false, 0
+    for k = 0, 3 do
+        if not read_into(buffers.byte, base + k * L.slot_stride, 1) then ready.flash = nil; return end
+        now[k] = buffers.byte[0]
+        if now[k] ~= 0 then
+            flashing = flashing + 1
+            if ready.flash and ready.flash[k] == 0 then started = true end
+        end
+    end
+    ready.now, ready.flash = ready.flash or {}, now
+    if started then toggle_ready(screen + L.panels, flashing) end
+end
+
+---------------------------------------------------------------------------------------
+-- The list kept open after a replacement
+
+-- While the list is open: the edited slot, the loadout and the list's scroll.
+local advance = {slot = nil, count = nil, block = nil, scroll = nil}
+
+local function loadout_block(screen, index)
+    local block = screen + SCREEN.blocks + index * SCREEN.block_size
+    if not read_into(buffers.block, block + BLOCK.entries, BLOCK.count - BLOCK.entries + 4) then return nil end
+    local count = buf_u32(buffers.block, BLOCK.count - BLOCK.entries)
+    if count > BLOCK_MAX then return nil end
+    return count, ffi.string(buffers.block, count * ENTRY_SIZE)
+end
+
+local function service_advance(screen, index, list_open, category)
+    if list_open then
+        if category ~= STRATAGEMS then advance.slot = nil; return end
+        advance.slot = buf_u32(buffers.head, SCREEN.edit)
+        advance.count, advance.block = loadout_block(screen, index)
+        advance.scroll = EXTRA.scroll and read(screen + L.list + L.scroll, 4) or nil
         return
     end
-    local count = buf_u32(buffers.synced, SYNCED.count)
-    if count > BLOCK_MAX then return end
-    local now = clock_now()
-    if not now then return end
-    -- The list's types; a different list (a new mission, a loadout change) starts over: nothing to compare with.
-    local types, by_type = {}, {}
-    for e = 0, count - 1 do
-        local t = buf_u32(buffers.synced, e * ENTRY_SIZE)
-        types[#types + 1] = t
-        if t ~= 0 then
-            by_type[t] = by_type[t] or {}
-            table.insert(by_type[t], e)
-        end
+    local slot = advance.slot
+    if slot == nil then return end
+    advance.slot = nil
+    -- Closed by a pick (the loadout changed) that left all four filled, from slot 1 to 3: the next slot.
+    local count, block = loadout_block(screen, index)
+    if not (count == 4 and advance.count == 4 and block ~= advance.block and slot < 3) then return end
+    if u32(read(screen + L.grid_mode, 4)) == 1 then return end
+    native.focus(screen + L.grid, slot + 1)
+    native.open(screen)
+    note(string.format('Replaced slot %d: list opened on slot %d', slot + 1, slot + 2))
+    if not (EXTRA.scroll and advance.scroll) then return end
+    -- Where the player was: the stratagem just picked focused, the scroll as it was before the list closed.
+    local list = screen + L.list
+    local picked = u32(read(screen + L.slot_types + slot * L.slot_stride, 4))
+    visit.offers = visit.offers or offer_map()
+    local offer = picked and visit.offers[item_id(picked)]
+    if offer then native.list_focus(list, offer) end
+    write(list + L.scroll, advance.scroll)
+    native.layout(list)
+end
+
+---------------------------------------------------------------------------------------
+-- Clear Stratagems (a Mod Bindings Menu key)
+
+local clear_key = {registered = false, down = false}
+
+local function clear_pressed()
+    local menu = rawget(_G, 'ModBindingsMenu')
+    if not (type(menu) == 'table' and menu.api == 1) then return false end
+    if not clear_key.registered then
+        clear_key.registered = true
+        local ok, res, why = pcall(menu.register_binding, CLEAR_BINDING, host_text(menu, 3, 'binding.clear', 64), nil,
+                                   {category = host_text(menu, 3, 'option.mod', 64)})
+        note('Mod Bindings Menu binding: ' .. ((ok and res) and 'registered' or ('not registered (' .. tostring(ok and why or res) .. ')')))
     end
-    local layout = list .. ':' .. table.concat(types, ',')
-    if layout ~= cd.layout then
-        cd.layout, cd.ends, cd.holds = layout, {}, {}
+    local ok, down = pcall(menu.is_down, CLEAR_BINDING)
+    down = ok and down and true or false
+    local edge = down and not clear_key.down
+    clear_key.down = down
+    return edge
+end
+
+-- Empties the four slots (each widget set to type 0), then writes the loadout block from the slots and saves it, as
+-- a pick does. Not while readying or ready (the ready timer not idle).
+local function clear_loadout(screen, index, list_open)
+    if EXTRA.ready and u32(read(screen + L.panels + L.ready_timer, 4)) ~= L.timer_idle then
+        note('Clear Stratagems: not while ready')
+        return
     end
-    -- A cooldown that started since the last check (its end moved past now) puts the copies on hold.
-    for e = 0, count - 1 do
-        local finish = buf_u64(buffers.synced, e * ENTRY_SIZE + SYNCED.finish)
-        local before = cd.ends[e]
-        cd.ends[e] = finish
-        local t = types[e + 1]
-        if before and finish > before and finish > now and #by_type[t] > 1 and copyable(t) then
-            for _, other in ipairs(by_type[t]) do
-                if other ~= e then
-                    cd.holds[other] = {index = other, type = t, start = now, until_ = now + COPY_COOLDOWN}
-                    note(string.format('Stratagem %d used (entry %d): copy %d held for 10 s', t, e, other))
-                end
-            end
-        end
+    local widgets = {}
+    for k = 0, 3 do
+        local widget = screen + WIDGET.base + k * L.slot_stride
+        local t = u32(read(widget + WIDGET.type, 4))
+        if t and t ~= 0 then widgets[#widgets + 1] = widget end
     end
-    -- Holds: a copy whose cooldown ends before the hold does gets the hold's (written again if a sync resets it).
-    for index, h in pairs(cd.holds) do
-        if now >= h.until_ or types[index + 1] ~= h.type then
-            cd.holds[index] = nil
-        elseif buf_u64(buffers.synced, index * ENTRY_SIZE + SYNCED.finish) < h.until_ then
-            hold_write(list, h)
-            cd.ends[index] = h.until_  -- our own write is not a new cooldown
-        end
-    end
+    if #widgets == 0 then return end
+    if list_open then native.close(screen) end
+    for _, widget in ipairs(widgets) do native.set_widget(widget, 0) end
+    native.slots_changed(screen + L.panels, -1)
+    native.save(screen + L.block_base + index * L.block_stride)
+    note(string.format('Clear Stratagems: %d slot(s) emptied', #widgets))
 end
 
 ---------------------------------------------------------------------------------------
@@ -829,6 +927,7 @@ local function leave_screen()
     restore_vehicles()
     state.screen = nil
     visit.offers, visit.block, visit.refused = nil, nil, nil
+    ready.flash, advance.slot = nil, nil
 end
 
 local function loadout_screen()
@@ -840,11 +939,7 @@ local function loadout_screen()
 end
 
 local function step()
-    service_cooldowns()
-    if settings.ruleset == 'off' then
-        if state.screen then leave_screen() end
-        return
-    end
+    local clear = EXTRA.clear and clear_pressed()
     if not state.screen and M.frames % IDLE_POLL ~= 0 then return end
     local screen = loadout_screen()
     if screen ~= state.screen then
@@ -853,28 +948,31 @@ local function step()
     end
     if not screen or not read_into(buffers.head, screen + SCREEN.head, SCREEN.head_size) then return end
     local index = buf_u32(buffers.head, SCREEN.local_index)
-    if buf_u32(buffers.head, SCREEN.category) ~= STRATAGEMS or index > 3 then restore_vehicles(); return end
+    local category = buf_u32(buffers.head, SCREEN.category)
+    if index <= 3 and (EXTRA.ready or EXTRA.advance or EXTRA.clear) and read_into(buffers.byte, screen + L.list_open, 1) then
+        local list_open = buffers.byte[0] ~= 0
+        if EXTRA.ready then service_ready(screen, list_open) end
+        if EXTRA.advance then service_advance(screen, index, list_open, category) end
+        if clear then clear_loadout(screen, index, list_open) end
+    end
+    if category ~= STRATAGEMS or index > 3 then restore_vehicles(); return end
     service_list(screen, index)
 end
 
 local where_found = ''
 
 local function report()
-    local details = {'Ruleset: ' .. RULESET_NAMES[settings.ruleset]
+    local details = {'Copies per stratagem: ' .. settings.max_copies
                      .. (settings.menu and ' (Mod Options Menu)' or ' (default; Mod Options Menu not found)'),
-                     'Game code found ' .. where_found}
-    if settings.ruleset == 'less' then
-        details[#details + 1] = 'Copy cooldown: ' .. (cd.available and 'active' or ('NOT AVAILABLE (' .. cd.why .. ')'))
-    end
-    local verdict
-    if settings.ruleset == 'off' then
-        verdict = 'IDLE - ruleset Off: the loadout works as normal'
-    elseif settings.ruleset == 'less' then
-        verdict = 'OK - up to two of each stratagem can be picked in the Hellpod loadout'
-    else
-        verdict = 'OK - any stratagem can be picked any number of times in the Hellpod loadout'
-    end
-    write_status(verdict, details)
+                     'Game code found ' .. where_found,
+                     'Ready with empty slots: ' .. (EXTRA.ready and 'on' or ('NOT AVAILABLE (' .. tostring(EXTRA.ready_why) .. ')')),
+                     'List kept open after a replacement: '
+                     .. (EXTRA.advance and 'on' or ('NOT AVAILABLE (' .. tostring(EXTRA.advance_why) .. ')')),
+                     'List scroll kept: ' .. (EXTRA.scroll and 'on' or ('NOT AVAILABLE (' .. tostring(EXTRA.scroll_why) .. ')')),
+                     'Clear Stratagems key: '
+                     .. (EXTRA.clear and 'on' or ('NOT AVAILABLE (' .. tostring(EXTRA.clear_why) .. ')'))}
+    write_status('OK - up to ' .. settings.max_copies .. ' of each stratagem can be picked in the Hellpod loadout',
+                 details)
 end
 
 local function unavailable(reason)
@@ -896,9 +994,12 @@ local function finish_start()
         end
     end
     if not good then return unavailable(reason) end
-    local cd_ok, cd_why = read_cooldown_layout()
-    cd.available, cd.why = cd_ok and true or false, cd_why
-    if not cd_ok then note('Copy cooldown not available: ' .. tostring(cd_why)) end
+    read_extras()
+    if not EXTRA.ready then note('Ready with empty slots not available: ' .. tostring(EXTRA.ready_why)) end
+    if not EXTRA.advance then note('List kept open not available: ' .. tostring(EXTRA.advance_why)) end
+    for _, k in ipairs({'scroll', 'clear'}) do
+        if not EXTRA[k] then note(k .. ' not available: ' .. tostring(EXTRA[k .. '_why'])) end
+    end
     make_buffers()
     where_found = #code.moved == 0 and "at this game version's addresses"
                   or ('by search (' .. #code.moved .. ' moved: ' .. table.concat(code.moved, ', ') .. ')')
@@ -956,5 +1057,6 @@ update = function(dt, ...)
 end
 
 note('Flexible Stratagems ' .. M.version .. ' loaded')
-M._test = {state = state, visit = visit, code = function() return code end, layout = L, settings = settings, cd = cd}
+M._test = {state = state, visit = visit, code = function() return code end, layout = L, settings = settings,
+           extra = EXTRA}
 return M

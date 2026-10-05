@@ -2,8 +2,8 @@
 
 The dump (_research/game_25480438.dll, offsets == RVAs) is mapped at a fake base, so the code signatures are
 matched against the game's own code; the globals they lead to (screen stack, loadout screen, stratagem list, offers
-table, stratagem table, synced lists, scene clock) and the two native functions (the list's marker and select) are
-simulated, and so is Mod Options Menu where a test picks a ruleset. "Other builds"
+table, stratagem table) and the two native functions (the list's marker and select) are simulated, and so is Mod
+Options Menu where a test sets the copy limit. "Other builds"
 are made by moving signatures' code elsewhere in the image (rip-relative and call operands fixed up), changing a
 structure offset inside moved code, or breaking code.
 
@@ -44,6 +44,7 @@ end}
 local patches, heap = {}, {}
 local function le64(v) return ffi.string(ffi.new('uint64_t[1]', v), 8) end
 local function le32(v) return ffi.string(ffi.new('uint32_t[1]', v), 4) end
+local function f32(v) return ffi.string(ffi.new('float[1]', v), 4) end
 fake.le32, fake.le64 = le32, le64
 local function read_mem(a, n)
     if a >= BASE and a + n <= BASE + #image then
@@ -105,7 +106,9 @@ end
 package.loaded.ffi = fake_ffi
 
 stingray = {Keyboard = {button_id = function(n) return n end, pressed = function(id) return fake.down[id] == true end}}
-update = function(dt) fake.base_updates = (fake.base_updates or 0) + 1 end
+update = function(dt)
+    fake.base_updates = (fake.base_updates or 0) + 1
+end
 
 -- Globals.
 fake.patch(0x347ce38, le64(STACK))
@@ -116,7 +119,8 @@ fake.patch(0x3326348, le64(CLK))
 fake.heap(STACK, le32(0) .. string.rep('\0', 172) .. le64(SCREEN) .. string.rep('\0', 0x400 - 184))
 fake.heap(SCREEN, string.rep('\0', 0x166000))
 fake.heap(SCREEN + 0x72868, le64(0))
-fake.heap(PLAYERS + 0x80, le32(0) .. le32(1))
+fake.heap(PLAYERS, string.rep('\0', 0x84) .. le32(1) .. le32(1) .. string.rep('\0', 0x400 - 0x8c))
+fake.heap(SCREEN + 0x273980, string.rep('\0', 0x40))   -- the list-open byte (+0x273990)
 fake.heap(SELF + 0xb398, le64(0x1111))
 fake.heap(CLK + 0x18, le64(50000000))
 fake.heap(SYS, string.rep('\0', 0x1690 * 2))
@@ -159,17 +163,6 @@ function fake.open_screen(local_index)
 end
 function fake.close_screen() write_mem(STACK, le32(0)) end
 function fake.set_players(n) write_mem(PLAYERS + 0x84, le32(n)) end
-function fake.set_synced(players)  -- {{peer, {{type, uses, cd_end}...}}...}
-    write_mem(SYS + 0x2d200, le32(#players))
-    for i, p in ipairs(players) do
-        local base = SYS + (i - 1) * 0x1690
-        write_mem(base, le64(p[1]))
-        local s = ''
-        for _, e in ipairs(p[2]) do s = s .. entry(e[1], e[2], e[3]) end
-        write_mem(base + 0x38 + 0x188, s .. string.rep('\0', 0x600 - #s))
-        write_mem(base + 0x38 + 0x788, le32(#p[2]))
-    end
-end
 -- Offers table: the stratagem range lists entries 10..14; entry k: offer id 0xb000 + type, item id 0x1000 + type.
 local OFFERS = 0x27000000
 fake.patch(0x347cef8, le64(OFFERS))
@@ -197,7 +190,8 @@ function fake.list_selectable()
     for i = 1, #s do out[i] = tostring(s:byte(i)) end
     return table.concat(out, ',')
 end
-function fake.set_category(c) write_mem(SCREEN + 0x2818, le32(c)) end
+-- The category is 10 (stratagems) only while the list is open (the opener sets it, the closer clears it).
+function fake.set_category(c) write_mem(SCREEN + 0x2818, le32(c)); write_mem(SCREEN + 0x273990, string.char(c == 10 and 1 or 0)) end
 -- The game's marker (0x18d1440): sets the offer's selectable byte to the flag.
 -- The game's select (0x18d10d0): sets the list's selected offer.
 fake.natives[0x18d10d0] = function(list, offer)
@@ -220,7 +214,10 @@ function fake.flags(t)
     local v = ffi.new('uint32_t[1]'); ffi.copy(v, read_mem(INFO + t * 0x200 + 0x104, 4), 4); return tonumber(v[0])
 end
 function fake.frame_step(n)
-    for _ = 1, n or 1 do fake.frame = fake.frame + 1; update(0.016) end
+    for _ = 1, n or 1 do
+        fake.frame = fake.frame + 1
+        update(0.016)
+    end
 end
 function fake.press(key) fake.down[key] = true; fake.frame_step(1); fake.down[key] = false end
 -- Mod Options Menu (version 2 unless given): records the registration; fake.menu_set(v) applies a value like the
@@ -242,16 +239,60 @@ function fake.menu_set(value)
     m.values[m.id] = value
     m.callbacks[m.id](value, m.id)
 end
-function fake.set_clock(us) write_mem(CLK + 0x18, le64(us)) end
-function fake.entry_u64(player, index, offset)  -- player: 1-based synced list
-    local v = ffi.new('uint64_t[1]')
-    ffi.copy(v, read_mem(SYS + (player - 1) * 0x1690 + 0x1c0 + index * 0x30 + offset, 8), 8)
-    return tonumber(v[0])
+-- The local panel (screen + 0x53a78): its slots' flags (+0xfcc0, 0x12a8 apart; flash byte +0x18), ready timer
+-- (+0x1ee14, -1.0 idle), local flag (+0x1ee0c), entity (+0x1edf8). Players: count +0x84, active +0x88, entries
+-- +0xe8 (entity at +8, local flag byte +0x14), flags +0x3ac (0x20 apart; bit 3 ready).
+local PANEL, PENTRIES = SCREEN + 0x53a78, 0x28000000
+function fake.set_list_open(v) write_mem(SCREEN + 0x273990, string.char(v and 1 or 0)) end
+function fake.set_flash(k, v) write_mem(PANEL + 0xfcc0 + k * 0x12a8 + 0x18, string.char(v)) end
+function fake.set_timer(bits) write_mem(PANEL + 0x1ee14, le32(bits)) end
+function fake.timer() local v = ffi.new('uint32_t[1]'); ffi.copy(v, read_mem(PANEL + 0x1ee14, 4), 4); return tonumber(v[0]) end
+function fake.setup_panel(players)  -- players: {{entity, ready}...}, the first one local
+    write_mem(PANEL + 0x1ee0c, '\1'); write_mem(PANEL + 0x1edf8, le32(players[1][1])); fake.set_timer(0xbf800000)
+    fake.heap(PENTRIES, string.rep('\0', 0x400))
+    write_mem(PLAYERS + 0x84, le32(#players)); write_mem(PLAYERS + 0x88, le32(1));
+    for i, pl in ipairs(players) do
+        local e = PENTRIES + 0x100 + i * 0x20
+        write_mem(PLAYERS + 0xe8 + (i - 1) * 8, le64(e))
+        write_mem(e + 8, le32(pl[1])); write_mem(e + 0x14, string.char(i == 1 and 1 or 0))
+        write_mem(PLAYERS + 0x3ac + (i - 1) * 0x20, le32(pl[2] and 8 or 0))
+    end
 end
-function fake.set_entry_end(player, index, us)
-    write_mem(SYS + (player - 1) * 0x1690 + 0x1c0 + index * 0x30 + 0x18, le64(us))
+function fake.player_flags(i) local v = ffi.new('uint32_t[1]'); ffi.copy(v, read_mem(PLAYERS + 0x3ac + i * 0x20, 4), 4); return tonumber(v[0]) end
+function fake.set_edit_slot(k) write_mem(SCREEN + 0x281c, le32(k)) end
+function fake.set_grid_mode(v) write_mem(SCREEN + 0x6f290, le32(v)) end
+-- The UI sound (0x1327f50), the grid's focus setter (0x1895770) and the list opener (0x146e9d0).
+fake.sounds = {}
+fake.natives[0x1327f50] = function(_, id) fake.sounds[#fake.sounds + 1] = string.format('0x%x', tonumber(id)) end
+fake.natives[0x1895770] = function(grid, slot)
+    fake.focused = string.format('0x%x %d', tonumber(grid) - SCREEN, tonumber(slot))
+    write_mem(tonumber(grid) + 0xd96c, le32(slot))
 end
-function fake.set_info(t, offset, v) write_mem(INFO + t * 0x200 + offset, le32(v)) end
+fake.natives[0x146e9d0] = function(screen)
+    fake.opened = (fake.opened or 0) + 1
+    fake.set_list_open(true)
+    write_mem(SCREEN + 0xd2f20 + 0x92960, f32(0))   -- the opener rebuilds the list: scroll back at the top
+end
+-- The list: its scroll (+0x92960), focus setter (0x18d1280) and layout (0x18d2b60).
+function fake.set_scroll(v) write_mem(SCREEN + 0xd2f20 + 0x92960, f32(v)) end
+function fake.scroll() local v = ffi.new('float[1]'); ffi.copy(v, read_mem(SCREEN + 0xd2f20 + 0x92960, 4), 4); return tonumber(v[0]) end
+fake.natives[0x18d1280] = function(list, offer) fake.list_focused = tonumber(offer); return 1 end
+fake.natives[0x18d2b60] = function(list) fake.laid_out = (fake.laid_out or 0) + 1 end
+-- The slots: flags (byte) and type at panel + 0xfcc0 + k * 0x12a8 (+4).
+function fake.set_slot(k, t, flags) write_mem(PANEL + 0xfcc0 + k * 0x12a8, string.char(flags or 0) .. '\0\0\0' .. le32(t)) end
+function fake.slot_flags(k) return read_mem(PANEL + 0xfcc0 + k * 0x12a8, 1):byte() end
+function fake.slot_type(k) local v = ffi.new('uint32_t[1]'); ffi.copy(v, read_mem(PANEL + 0xfcc4 + k * 0x12a8, 4), 4); return tonumber(v[0]) end
+-- Clear: the widget setter (0x1893600: type at widget + 0x128c), the slots written to the block (0x189d120), the save
+-- (0x1751350) and the list's closer (0x146f3b0).
+fake.natives[0x1893600] = function(widget, t) write_mem(tonumber(widget) + 0x128c, le32(t)) end
+fake.natives[0x189d120] = function(panel, all)
+    fake.slots_written = string.format('0x%x %d', tonumber(panel) - SCREEN, tonumber(all))
+    local types = {}
+    for k = 0, 3 do if fake.slot_type(k) ~= 0 then types[#types + 1] = fake.slot_type(k) end end
+    fake.set_block(0, types)
+end
+fake.natives[0x1751350] = function(block) fake.saved = string.format('0x%x', tonumber(block) - SCREEN) end
+fake.natives[0x146f3b0] = function(screen) fake.closed = (fake.closed or 0) + 1; fake.set_list_open(false) end
 '''
 
 results = []
@@ -326,26 +367,26 @@ def main():
     check(not sigspec.check(MOD / 'flexible_stratagems.lua', sigspec.build(signatures.SPECS)),
           'the script carries the current signature engine (tools/sigscan.lua)')
 
-    # 1. This build, no Mod Options Menu: Less Restricted; idle outside the loadout screen.
+    # 1. This build, no Mod Options Menu: 2 copies; idle outside the loadout screen.
     lua, logs = new_game(image)
     f = lua.globals().fake
     f.frame_step(1)
     status = text(logs / 'FlexibleStratagems_STATUS.log')
-    check(status.startswith('OK - up to two of each stratagem') and 'Flexible Stratagems %s' % version in status
-          and 'Ruleset: Less Restricted (default; Mod Options Menu not found)' in status
-          and "Game code found at this game version's addresses" in status and 'Copy cooldown: active' in status,
-          'status OK on this build, Less Restricted by default: %r' % status)
+    check(status.startswith('OK - up to 2 of each stratagem') and 'Flexible Stratagems %s' % version in status
+          and 'Copies per stratagem: 2 (default; Mod Options Menu not found)' in status
+          and "Game code found at this game version's addresses" in status and 'ooldown' not in status,
+          'status OK on this build, 2 copies by default: %r' % status)
     check(f.base_updates == 1, 'update chained')
     rate = reads_per_frame(f, 120)
     check(rate <= 1 and not f.game_writes, 'outside the loadout screen: %.2f reads per frame, no writes' % rate)
 
-    # 2. Unleashed (Mod Options Menu). Loadout screen, another category: a few reads per frame, nothing written.
-    lua, logs = new_game(image, 'fake.install_menu(3)')
+    # 2. 4 copies (Mod Options Menu). Loadout screen, another category: a few reads per frame, nothing written.
+    lua, logs = new_game(image, 'fake.install_menu(4)')
     f = lua.globals().fake
     f.frame_step(1)
     status = text(logs / 'FlexibleStratagems_STATUS.log')
-    check(status.startswith('OK - any stratagem can be picked any number of times')
-          and 'Ruleset: Unleashed (Mod Options Menu)' in status, 'Unleashed from Mod Options Menu: %r' % status.splitlines()[:3])
+    check(status.startswith('OK - up to 4 of each stratagem')
+          and 'Copies per stratagem: 4 (Mod Options Menu)' in status, '4 copies from Mod Options Menu: %r' % status.splitlines()[:3])
     f.set_flags(12, 0x00200021)
     f.set_flags(9, 0x80100000)
     f.set_flags(20, 0x0000000a)
@@ -355,7 +396,8 @@ def main():
     f.open_screen(0)
     f.frame_step(10)
     rate = reads_per_frame(f, 20)
-    check(rate <= 3 and not f.game_writes and f.flags(12) == 0x00200021, 'other category: %.1f reads per frame, nothing written' % rate)
+    # List closed: the screen (3), the list-open byte and the four flash bytes.
+    check(rate <= 8 and not f.game_writes and f.flags(12) == 0x00200021, 'other category: %.1f reads per frame, nothing written' % rate)
 
     # 3. The stratagem list opens: vehicle bits cleared; steady state costs one list read.
     f.set_category(10)
@@ -364,7 +406,8 @@ def main():
           'list open: only the vehicle bits cleared: %x %x %x' % (f.flags(12), f.flags(9), f.flags(20)))
     writes = f.game_writes
     rate = reads_per_frame(f, 20)
-    check(rate <= 4 and f.game_writes == writes, 'list open, nothing refused: %.1f reads per frame, no writes' % rate)
+    # List open: the screen (3), the list-open byte, the list span, the loadout block and the scroll.
+    check(rate <= 7 and f.game_writes == writes, 'list open, nothing refused: %.1f reads per frame, no writes' % rate)
 
     # 4. The game's refresh refuses the loadout's stratagems (and one item for another reason): the loadout's are
     #    marked back through the game's marker, the other stays refused and costs nothing more afterwards.
@@ -373,17 +416,17 @@ def main():
     f.frame_step(1)
     check(f.list_selectable() == '1,1,1,1,1,0' and f.marked == 4, 'loadout stratagems marked selectable: %s' % f.list_selectable())
     rate = reads_per_frame(f, 20)
-    check(rate <= 4 and f.marked == 4, 'an unrelated refused item: %.1f reads per frame, not marked again' % rate)
+    check(rate <= 7 and f.marked == 4, 'an unrelated refused item: %.1f reads per frame, not marked again' % rate)
     check(not f.selects and f.selected() == 0xb009, 'no pick yet: the selection (focus) is left alone')
 
     # 5. A pick (Railcannon again): the refresh refuses the loadout's stratagems again; the selection left on the
-    #    Railcannon is cleared once, so its next pick plays the sound. Unleashed: two Railcannons stay pickable.
+    #    Railcannon is cleared once, so its next pick plays the sound. Two Railcannons stay pickable (limit 4).
     f.set_selected(0xb005)
     f.set_block(0, lua.table(5, 5, 12, 3))
     f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(0, 1, 0, 1, 0, 0))
     f.frame_step(1)
     check(f.selects == 1 and f.selected() == 0 and f.list_selectable() == '1,1,1,1,1,0',
-          'after a pick: selection cleared, loadout marked again (two copies still selectable when Unleashed)')
+          'after a pick: selection cleared, loadout marked again (two copies still selectable under 4)')
     f.set_selected(0xb005)
     f.frame_step(5)
     check(f.selects == 1 and f.selected() == 0xb005, 'the selection is cleared once per pick (controller focus kept)')
@@ -419,8 +462,8 @@ def main():
     f.frame_step(10)
     check(f.flags(12) == 0x00400001, 'and restored')
 
-    # 7. Less Restricted (the default): a stratagem in the loadout once is marked back, one already there twice
-    #    stays refused; vehicles are lifted too (a second copy of a vehicle).
+    # 7. 2 copies (the default): a stratagem in the loadout once is marked back, one already there twice stays
+    #    refused; vehicles are lifted too (a second copy of a vehicle).
     lua, logs = new_game(image, 'fake.install_menu(2)')
     f = lua.globals().fake
     f.frame_step(1)
@@ -431,7 +474,7 @@ def main():
     f.open_screen(0)
     f.frame_step(10)
     check(f.list_selectable() == '1,1,1,1,1,0' and f.flags(12) == 0x21,
-          'Less Restricted, one of each: all marked back, vehicle bits lifted: %s' % f.list_selectable())
+          '2 copies, one of each: all marked back, vehicle bits lifted: %s' % f.list_selectable())
     f.set_block(0, lua.table(5, 5, 12, 12))
     f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(0, 1, 0, 1, 1, 0))
     f.frame_step(2)
@@ -444,88 +487,42 @@ def main():
     f.frame_step(2)
     check(f.list_selectable() == '1,1,0,1,1,0', 'a copy replaced: the Railcannon is pickable again: %s' % f.list_selectable())
 
-    # 8. Rulesets change in game: Off gives the vehicle bits back at once and marks nothing; Unleashed marks the
-    #    two-copy stratagem back.
-    f.menu_set(1)
-    f.frame_step(1)
-    status = text(logs / 'FlexibleStratagems_STATUS.log')
-    check(f.flags(12) == 0x00200021 and status.startswith('IDLE - ruleset Off'), 'Off: vehicle bits restored, status IDLE: %r'
-          % status.splitlines()[:1])
-    writes, marked = f.game_writes, f.marked
+    # 8. The limit changes in game: at 3 the two-copy stratagems are marked back, a third copy stays refused; at 4 it
+    #    is marked back too. Out-of-range values are clamped.
+    f.menu_set(3)
     f.set_block(0, lua.table(5, 5, 12, 12))
     f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(0, 1, 0, 1, 1, 0))
-    f.frame_step(20)
-    check(f.game_writes == writes and f.marked == marked and f.list_selectable() == '0,1,0,1,1,0',
-          'Off: nothing written or marked')
-    f.menu_set(3)
-    f.frame_step(12)  # the screen is looked for every 10 frames while the mod isn't serving it
-    check(f.list_selectable() == '1,1,1,1,1,0' and f.flags(12) == 0x21, 'Unleashed: both marked back: %s' % f.list_selectable())
+    f.frame_step(2)
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check(f.list_selectable() == '1,1,1,1,1,0' and status.startswith('OK - up to 3 of each stratagem'),
+          '3 copies: two Railcannons and two vehicles stay pickable: %s' % f.list_selectable())
+    f.set_block(0, lua.table(5, 5, 5, 12))
+    f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(0, 1, 0, 1, 1, 0))
+    f.frame_step(2)
+    check(f.list_selectable() == '0,1,1,1,1,0', '3 copies: a third Railcannon stays refused: %s' % f.list_selectable())
+    f.menu_set(4)
+    f.frame_step(2)
+    check(f.list_selectable() == '1,1,1,1,1,0' and f.flags(12) == 0x21, '4 copies: marked back: %s' % f.list_selectable())
+    f.menu_set(9)
+    f.frame_step(1)
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check(status.startswith('OK - up to 4 of each'), 'a value above the slider is clamped to 4: %r' % status.splitlines()[:1])
 
-    # 9. Mod Options Menu texts: functions (version 2), Off as the game's own word, within the menu's limits.
+    # 9. Mod Options Menu: an integer slider from 2 to 4 (default 2), texts as functions (version 2) within the limits.
     spec = f.menu.spec
-    check(spec.type == 'choice' and spec.default == 2 and callable(spec.label) and spec.label() == 'Ruleset'
-          and spec.mod() == 'Flexible Stratagems' and spec.choices[1] == 'Off' and spec.choices[2]() == 'Less Restricted'
-          and spec.choices[3]() == 'Unleashed' and len(spec.description()) <= 400,
-          'option texts: functions, Off plain, description %d characters' % len(spec.description()))
+    check(f.menu.id == 'alomare.flexible_stratagems.max_copies' and spec.type == 'slider' and spec.min == 2
+          and spec.max == 4 and spec.step == 1 and spec.default == 2 and callable(spec.label)
+          and spec.label() == 'Copies per Stratagem' and spec.mod() == 'Flexible Stratagems'
+          and len(spec.description()) <= 400,
+          'option: slider 2-4, default 2, texts as functions, description %d characters' % len(spec.description()))
     lua, logs = new_game(image, 'fake.install_menu(nil, 1)')
     f = lua.globals().fake
     f.frame_step(1)
     spec = f.menu.spec
-    check(spec.label == 'Ruleset' and spec.choices[2] == 'Less Restricted', 'Mod Options Menu v1.0: plain strings')
-
-    # 10. The copy cooldown (Less Restricted): the local player's list (peer 0x1111) is found among the synced
-    #     lists; when a stratagem's cooldown starts, its copy gets 10 seconds, kept against a sync that resets it.
-    #     Eagles (additional stratagem = Eagle Rearm) and shared-cooldown stratagems are left alone.
-    lua, logs = new_game(image)
-    f = lua.globals().fake
-    f.set_info(9, 0xc8, 0x31)    # Eagle 500kg: its family shares the rearm
-    f.set_info(20, 0x94, 1)      # a shared-cooldown stratagem
-    f.set_clock(50000000)
-    f.set_synced(lua.table(lua.table(0x2222, lua.table(lua.table(5, 1, 0), lua.table(5, 1, 0))),
-                           lua.table(0x1111, lua.table(lua.table(5, 1, 0), lua.table(5, 1, 0), lua.table(9, 2, 0),
-                                                       lua.table(9, 2, 0), lua.table(20, 1, 0), lua.table(20, 1, 0),
-                                                       lua.table(12, 1, 0)))))
-    f.frame_step(13)
-    writes = f.game_writes or 0
-    f.set_entry_end(2, 0, 110000000)   # Railcannon 1 used: 60 s
-    f.frame_step(7)
-    check(f.entry_u64(2, 1, 0x18) == 60000000 and f.entry_u64(2, 1, 0x10) == 50000000 and f.entry_u64(2, 1, 0x20) == 50000000,
-          'Railcannon used: its copy gets 10 s (start, base = now; end = now + 10 s): %d' % f.entry_u64(2, 1, 0x18))
-    check(f.entry_u64(1, 0, 0x18) == 0 and f.entry_u64(1, 1, 0x18) == 0, "another player's list is left alone")
-    f.set_entry_end(2, 2, 80000000)    # Eagle used
-    f.set_entry_end(2, 4, 90000000)    # shared-cooldown stratagem used
-    f.frame_step(7)
-    check(f.entry_u64(2, 3, 0x18) == 0 and f.entry_u64(2, 5, 0x18) == 0, 'Eagles and shared cooldowns: no copy cooldown')
-    f.set_clock(55000000)
-    f.set_entry_end(2, 1, 0)           # a sync from the host resets the copy
-    f.frame_step(2)
-    check(f.entry_u64(2, 1, 0x18) == 60000000, 'reset by a sync within the 10 s: written again')
-    f.set_clock(61000000)
-    f.frame_step(7)
-    f.set_entry_end(2, 1, 0)
-    f.frame_step(7)
-    check(f.entry_u64(2, 1, 0x18) == 0, 'after the 10 s: left alone')
-    f.set_entry_end(2, 0, 0)           # the first one ready again
-    f.frame_step(7)
-    f.set_entry_end(2, 1, 200000000)   # the copy used, with a long cooldown
-    f.frame_step(7)
-    check(f.entry_u64(2, 0, 0x18) == 71000000, 'the copy used: the first one gets 10 s: %d' % f.entry_u64(2, 0, 0x18))
-    f.set_entry_end(2, 0, 300000000)   # the first one used again while its copy is on a longer cooldown
-    f.frame_step(7)
-    check(f.entry_u64(2, 1, 0x18) == 200000000, 'a copy on a longer cooldown keeps it')
-
-    # 11. The copy cooldown follows the ruleset: none when Unleashed.
-    lua, logs = new_game(image, 'fake.install_menu(3)')
-    f = lua.globals().fake
-    f.set_clock(50000000)
-    f.set_synced(lua.table(lua.table(0x1111, lua.table(lua.table(5, 1, 0), lua.table(5, 1, 0)))))
-    f.frame_step(13)
-    f.set_entry_end(1, 0, 110000000)
-    f.frame_step(13)
-    check(f.entry_u64(1, 1, 0x18) == 0 and not f.game_writes, 'Unleashed: no copy cooldown, nothing written')
+    check(spec.label == 'Copies per Stratagem' and spec.mod == 'Flexible Stratagems', 'Mod Options Menu v1.0: plain strings')
 
     # 12. Errors: the vehicle bits are restored; five errors stop the mod.
-    lua, logs = new_game(image, "fake.install_menu(3); fake.natives[0x18d1440] = function() error('boom') end")
+    lua, logs = new_game(image, "fake.install_menu(4); fake.natives[0x18d1440] = function() error('boom') end")
     f = lua.globals().fake
     f.frame_step(1)
     f.set_flags(12, 0x00200021)
@@ -549,7 +546,7 @@ def main():
 
     def moved_build(lua):
         f = lua.globals().fake
-        lua.execute('fake.install_menu(3)')
+        lua.execute('fake.install_menu(4)')
         for name in new:
             rva, garbage = broken(name)
             f.patch(rva, garbage)
@@ -572,7 +569,7 @@ def main():
     elapsed = time.perf_counter() - started
     status = text(logs / 'FlexibleStratagems_STATUS.log')
     print('INFO search of game.dll: %d frames, %.2f s in this LuaJIT (%.0f ms per frame)' % (frames, elapsed, elapsed * 1000 / frames))
-    check(status.startswith('OK - any stratagem') and 'Game code found by search (3 moved: screen, marker, select)' in status,
+    check(status.startswith('OK - up to 4 of each') and 'Game code found by search (3 moved: screen, marker, select)' in status,
           'moved code found by search: %r' % status.splitlines()[-1:])
     f.set_flags(12, 0x00200021)
     f.set_block(0, lua.table(5, 5, 12))
@@ -619,13 +616,134 @@ def main():
               and not len(f.calls) and f.list_selectable() == '0,0', 'another build (%s): nothing written or called: %r'
               % (why, status.splitlines()[:1]))
 
-    # 15. Without the cooldown code only the copy cooldown is off; the picker still works.
-    lua, logs = new_game(image, build(broken('cooldown_copy')))
+
+    # 15. Ready with empty slots: a flash starting on the local panel's slots (the handler's refusal) toggles the ready
+    #     the handler's way; a flash still showing, or one while the list is open, does nothing.
+    lua, logs = new_game(image)
+    f = lua.globals().fake
+    f.frame_step(1)
+    f.setup_panel(lua.table(lua.table(77, False), lua.table(88, False)))
+    f.set_block(0, lua.table(5, 9))
+    f.open_screen(0)
+    f.frame_step(12)
+    f.set_flash(2, 1); f.set_flash(3, 1)
+    f.frame_step(1)
+    log = lambda: text(logs / 'FlexibleStratagems.log')
+    check(f.timer() == 0x3fe00000 and list(f.sounds.values()) == ['0x4d777731'] and 'Ready with 2 empty slot(s)' in log(),
+          'refused ready: the timer starts at 1.75 s with the ready sound: 0x%x %r' % (f.timer(), list(f.sounds.values())))
+    f.frame_step(30)
+    check(f.timer() == 0x3fe00000 and len(f.sounds) == 1, 'a flash still showing: nothing more')
+    f.set_flash(2, 0); f.set_flash(3, 0)
+    f.set_timer(0xbd000000)                                 # the panel update ran the timer out ...
+    lua.execute('fake.write(%d, fake.le32(8))' % (0x23000000 + 0x3ac))  # ... and set the ready bit
+    f.frame_step(2)
+    f.set_flash(2, 1)
+    f.frame_step(1)
+    check(f.timer() == 0xbf800000 and f.player_flags(0) == 0 and len(f.sounds) == 1 and 'Ready cancelled' in log(),
+          'refused again while ready: cancelled (timer idle, ready bit cleared, the refusal played the sound)')
+    f.set_flash(2, 0); f.frame_step(1)
+    lua.execute('fake.write(%d, fake.le32(8))' % (0x23000000 + 0x3ac + 0x20))  # the other player is ready
+    f.set_flash(3, 1); f.frame_step(1)
+    check(f.timer() == 0x3fe00000 and list(f.sounds.values())[-1] == '0x7947920',
+          'the last player to ready: the last ready sound: %r' % list(f.sounds.values()))
+    f.set_flash(3, 0); f.set_timer(0xbf800000); f.set_list_open(True); f.frame_step(1)
+    f.set_flash(3, 1); f.frame_step(2)
+    check(f.timer() == 0xbf800000, 'a flash while the list is open: nothing')
+    f.set_list_open(False); f.set_flash(3, 0); f.frame_step(1)
+    lua.execute("fake.write(%d, '\\0')" % (0x21000000 + 0x53a78 + 0x1ee0c))  # not the local panel
+    f.set_flash(3, 1); f.frame_step(1)
+    check(f.timer() == 0xbf800000, 'not the local panel: nothing')
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check('Ready with empty slots: on' in status and 'List kept open after a replacement: on' in status,
+          'status: both list extras on: %r' % status.splitlines()[-2:])
+
+    # 16. A replacement in a full loadout closes the list: it opens again on the next slot (through the grid's focus
+    #     setter and the game's opener). Escape (no change), the last slot, a fill of an empty slot and grid mode 1:
+    #     closed as the game leaves it.
+    lua, logs = new_game(image)
+    f = lua.globals().fake
+    f.frame_step(1)
+    f.open_screen(0)
+    f.frame_step(12)
+
+    def pick(slot, before, after, close=True, mode=0):
+        f.focused, f.opened = None, 0
+        f.set_grid_mode(mode)
+        f.set_block(0, lua.table(*before)); f.set_list(lua.table(5, 9, 12, 20, 3), lua.table(1, 1, 1, 1, 1))
+        f.set_category(10); f.set_edit_slot(slot); f.set_list_open(True)
+        f.frame_step(2)
+        f.set_scroll(321.5)
+        f.frame_step(1)
+        f.set_block(0, lua.table(*after))
+        f.set_slot(slot, after[slot] if slot < len(after) else 0)
+        if close:
+            f.set_category(0); f.set_list_open(False)
+        f.frame_step(2)
+        result = (f.focused, f.opened)
+        f.set_category(0); f.set_list_open(False); f.frame_step(2)
+        return result
+
+    f.list_focused, f.laid_out = None, 0
+    check(pick(1, (5, 9, 12, 3), (5, 20, 12, 3)) == ('0x595f0 2', 1),
+          'replaced slot 2 of 4: the list opens again on slot 3')
+    check(f.list_focused == 0xb000 + 20 and f.scroll() == 321.5 and f.laid_out == 1,
+          'the list focuses the stratagem just picked and keeps its scroll: %r %r %r' % (f.list_focused, f.scroll(), f.laid_out))
+    check(pick(0, (5, 9, 12, 3), (5, 9, 12, 3)) == (None, 0), 'closed without a change (Escape): stays closed')
+    check(pick(3, (5, 9, 12, 3), (5, 9, 12, 20)) == (None, 0), 'replaced slot 4: closes as the game does')
+    check(pick(1, (5, 12, 3), (5, 20, 12, 3)) == (None, 0), 'filled the last empty slot: closes as the game does')
+    check(pick(1, (5, 9, 12, 3), (5, 20, 12, 3), mode=1) == (None, 0), 'grid mode 1: left alone')
+    check(pick(1, (5, 9, 12, 3), (5, 20, 12, 3), close=False) == (None, 0), 'the list still open: nothing')
+    check('Replaced slot 2: list opened on slot 3' in text(logs / 'FlexibleStratagems.log'), 'logged')
+
+    # 17. Clear Stratagems: a Mod Bindings Menu key empties the four slots, writes the block from them and saves it;
+    #     with the list open it closes it first; not while ready.
+    def clear_game():
+        lua, logs = new_game(image, "ModBindingsMenu = {api = 1, version = 3, register_binding = function(id, label, slot, o) "
+                                    "fake.bound = id .. '|' .. label() .. '|' .. o.category(); return true end, "
+                                    "is_down = function(id) return fake.clear_down == true end}")
+        f = lua.globals().fake
+        f.frame_step(1)
+        f.setup_panel(lua.table(lua.table(77, False)))
+        f.set_slot(0, 5); f.set_slot(1, 9); f.set_slot(2, 12); f.set_slot(3, 0)
+        f.set_block(0, lua.table(5, 9, 12))
+        f.open_screen(0)
+        f.frame_step(12)
+        return lua, logs, f
+
+    lua, logs, f = clear_game()
+    check(f.bound == 'alomare.flexible_stratagems.clear|Clear Stratagems|Flexible Stratagems', 'the clear key: %r' % f.bound)
+    f.clear_down = True; f.frame_step(1); f.clear_down = False; f.frame_step(1)
+    check([f.slot_type(k) for k in range(4)] == [0, 0, 0, 0] and f.block_types(0) == '' and f.slots_written == '0x53a78 -1'
+          and f.saved == '0x10' and not f.closed and 'Clear Stratagems: 3 slot(s) emptied' in text(logs / 'FlexibleStratagems.log'),
+          'clear: the slots emptied, the block written from them and saved: %r %r' % (f.block_types(0), f.saved))
+    lua, logs, f = clear_game()
+    f.set_category(10)
+    f.clear_down = True; f.frame_step(1); f.clear_down = False
+    check(f.closed == 1 and f.slot_type(0) == 0, 'clear with the list open: closed first')
+    lua, logs, f = clear_game()
+    f.set_timer(0x3fe00000)
+    f.clear_down = True; f.frame_step(1); f.clear_down = False
+    check(f.slot_type(0) == 5 and not f.saved and 'not while ready' in text(logs / 'FlexibleStratagems.log'), 'not while ready')
+    lua, logs, f = clear_game()
+    f.close_screen(); f.frame_step(12)
+    f.clear_down = True; f.frame_step(1); f.clear_down = False; f.frame_step(12)
+    check(f.slot_type(0) == 5 and not f.saved, 'outside the loadout screen: nothing')
+
+    # 18. Without the ready code only that extra is off; the picker and the other extra still work.
+    lua, logs = new_game(image, build(broken('ready_slots')))
     f = lua.globals().fake
     f.frame_step(40)
     status = text(logs / 'FlexibleStratagems_STATUS.log')
-    check(status.startswith('OK - up to two') and 'Copy cooldown: NOT AVAILABLE (code "cooldown_copy" not found)' in status,
-          'cooldown code missing: only the copy cooldown is off: %r' % status.splitlines()[-1:])
+    check(status.startswith('OK - up to 2') and 'Ready with empty slots: NOT AVAILABLE (code "ready_slots" not found)' in status
+          and 'List kept open after a replacement: on' in status,
+          'ready code missing: only that extra is off: %r' % status.splitlines()[-2:])
+    lua, logs = new_game(image, build((SIG_ROWS['equip_tail'][0] + SIG_ROWS['equip_tail'][2]['focus_call'][1][0],
+                                       (0x10).to_bytes(4, 'little'))))
+    f = lua.globals().fake
+    f.frame_step(40)
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check('List kept open after a replacement: NOT AVAILABLE (the equip handler does not focus with the setter found)'
+          in status, 'the equip handler calling another focus setter: that extra is off: %r' % status.splitlines()[-1:])
 
     passed = sum(results)
     print(f'{passed}/{len(results)} passed')
