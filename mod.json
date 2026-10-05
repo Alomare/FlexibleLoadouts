@@ -3,7 +3,7 @@
     "guid": "6939fac7-0205-4e09-914b-827ab7913fe0",
     "displayName": "Flexible Stratagems",
     "entry": "flexible_stratagems.lua",
-    "version": "4",
+    "version": "5",
     "icon": "icon.png",
     "description": "Bring the same stratagem more than once in the Hellpod loadout, vehicles included, and ready up with fewer than four. Set how many copies are allowed (2 to 4) with Mod Options Menu.",
     "requires": [

@@ -2,6 +2,11 @@
 
 Releases are named "Flexible Stratagems V&lt;n&gt;" (tag `v<n>`). Each section is that release's notes. Versions 1 and 2 were released as Stratagems Unleashed.
 
+## V5 (2026-10-05)
+
+- Fixed: after readying with fewer than four stratagems, pressing Ready again right away was ignored for about two seconds. It now cancels (or readies) on the first press.
+- Fixed: readying with fewer than four stratagems now plays the ready pose, for you and your squad.
+
 ## V4 (2026-10-05)
 
 - Replaced the rulesets with a Mod Options Menu slider: Copies per Stratagem, from 2 to 4 (default 2). Vehicles are always included.

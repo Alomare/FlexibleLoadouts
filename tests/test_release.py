@@ -240,15 +240,17 @@ function fake.menu_set(value)
     m.callbacks[m.id](value, m.id)
 end
 -- The local panel (screen + 0x53a78): its slots' flags (+0xfcc0, 0x12a8 apart; flash byte +0x18), ready timer
--- (+0x1ee14, -1.0 idle), local flag (+0x1ee0c), entity (+0x1edf8). Players: count +0x84, active +0x88, entries
+-- (+0x1ee14, -1.0 idle), local flag (+0x1ee0c), entity (+0x1edf8), unit (+0x1edfc). Players: count +0x84, active +0x88, entries
 -- +0xe8 (entity at +8, local flag byte +0x14), flags +0x3ac (0x20 apart; bit 3 ready).
 local PANEL, PENTRIES = SCREEN + 0x53a78, 0x28000000
 function fake.set_list_open(v) write_mem(SCREEN + 0x273990, string.char(v and 1 or 0)) end
 function fake.set_flash(k, v) write_mem(PANEL + 0xfcc0 + k * 0x12a8 + 0x18, string.char(v)) end
 function fake.set_timer(bits) write_mem(PANEL + 0x1ee14, le32(bits)) end
+function fake.set_unit(v) write_mem(PANEL + 0x1edfc, le32(v)) end
 function fake.timer() local v = ffi.new('uint32_t[1]'); ffi.copy(v, read_mem(PANEL + 0x1ee14, 4), 4); return tonumber(v[0]) end
 function fake.setup_panel(players)  -- players: {{entity, ready}...}, the first one local
     write_mem(PANEL + 0x1ee0c, '\1'); write_mem(PANEL + 0x1edf8, le32(players[1][1])); fake.set_timer(0xbf800000)
+    fake.set_unit(0x4242)
     fake.heap(PENTRIES, string.rep('\0', 0x400))
     write_mem(PLAYERS + 0x84, le32(#players)); write_mem(PLAYERS + 0x88, le32(1));
     for i, pl in ipairs(players) do
@@ -293,6 +295,19 @@ fake.natives[0x189d120] = function(panel, all)
 end
 fake.natives[0x1751350] = function(block) fake.saved = string.format('0x%x', tonumber(block) - SCREEN) end
 fake.natives[0x146f3b0] = function(screen) fake.closed = (fake.closed or 0) + 1; fake.set_list_open(false) end
+-- The READY prompt's press check (0x1891850: prompt, input object [0x347cf18]): fake.ready_pressed for one frame.
+local INPUT = 0x29000000
+fake.heap(INPUT, string.rep('\0', 0x40))
+fake.patch(0x347cf18, le64(INPUT))
+fake.natives[0x1891850] = function(prompt, input)
+    fake.press_args = string.format('0x%x 0x%x', tonumber(prompt) - PANEL, tonumber(input))
+    return fake.ready_pressed and 1 or 0
+end
+-- The emote sender (0xbf2e20: unused, unit, event, 0.0, 0.0): the ready pose told to every peer.
+fake.poses = {}
+fake.natives[0xbf2e20] = function(_, unit, event, a, b)
+    fake.poses[#fake.poses + 1] = string.format('0x%x 0x%x %s %s', tonumber(unit), tonumber(event), tostring(a), tostring(b))
+end
 '''
 
 results = []
@@ -396,8 +411,9 @@ def main():
     f.open_screen(0)
     f.frame_step(10)
     rate = reads_per_frame(f, 20)
-    # List closed: the screen (3), the list-open byte and the four flash bytes.
-    check(rate <= 8 and not f.game_writes and f.flags(12) == 0x00200021, 'other category: %.1f reads per frame, nothing written' % rate)
+    # List closed: the screen (3), the list-open byte, the four flash bytes and the ready timer.
+    check(rate <= 9 and not f.game_writes and f.flags(12) == 0x00200021, 'other category: %.1f reads per frame, nothing written' % rate)
+    check(f.press_args is None, 'no flash showing: the press check is never called')
 
     # 3. The stratagem list opens: vehicle bits cleared; steady state costs one list read.
     f.set_category(10)
@@ -631,6 +647,8 @@ def main():
     log = lambda: text(logs / 'FlexibleStratagems.log')
     check(f.timer() == 0x3fe00000 and list(f.sounds.values()) == ['0x4d777731'] and 'Ready with 2 empty slot(s)' in log(),
           'refused ready: the timer starts at 1.75 s with the ready sound: 0x%x %r' % (f.timer(), list(f.sounds.values())))
+    poses = lambda: list(f.poses.values())
+    check(poses() == ['0x4242 0x97e150a4 0 0'], 'refused ready: the ready pose sent for the panel\'s unit: %r' % poses())
     f.frame_step(30)
     check(f.timer() == 0x3fe00000 and len(f.sounds) == 1, 'a flash still showing: nothing more')
     f.set_flash(2, 0); f.set_flash(3, 0)
@@ -641,6 +659,7 @@ def main():
     f.frame_step(1)
     check(f.timer() == 0xbf800000 and f.player_flags(0) == 0 and len(f.sounds) == 1 and 'Ready cancelled' in log(),
           'refused again while ready: cancelled (timer idle, ready bit cleared, the refusal played the sound)')
+    check(poses()[1:] == ['0x4242 0x5d1d1963 0 0'], 'cancelled: the ready pose stopped: %r' % poses())
     f.set_flash(2, 0); f.frame_step(1)
     lua.execute('fake.write(%d, fake.le32(8))' % (0x23000000 + 0x3ac + 0x20))  # the other player is ready
     f.set_flash(3, 1); f.frame_step(1)
@@ -648,14 +667,47 @@ def main():
           'the last player to ready: the last ready sound: %r' % list(f.sounds.values()))
     f.set_flash(3, 0); f.set_timer(0xbf800000); f.set_list_open(True); f.frame_step(1)
     f.set_flash(3, 1); f.frame_step(2)
-    check(f.timer() == 0xbf800000, 'a flash while the list is open: nothing')
+    check(f.timer() == 0xbf800000 and len(poses()) == 3, 'a flash while the list is open: nothing')
     f.set_list_open(False); f.set_flash(3, 0); f.frame_step(1)
     lua.execute("fake.write(%d, '\\0')" % (0x21000000 + 0x53a78 + 0x1ee0c))  # not the local panel
     f.set_flash(3, 1); f.frame_step(1)
     check(f.timer() == 0xbf800000, 'not the local panel: nothing')
     status = text(logs / 'FlexibleStratagems_STATUS.log')
-    check('Ready with empty slots: on' in status and 'List kept open after a replacement: on' in status,
-          'status: both list extras on: %r' % status.splitlines()[-2:])
+    check('Ready with empty slots: on' in status and 'Ready press during a flash: on' in status
+          and 'List kept open after a replacement: on' in status, 'status: the list extras on: %r' % status.splitlines()[-4:])
+
+    # 15b. A Ready press while a flash still shows (the handler refused without flashing again): told by the game's
+    #      press check, it toggles too, so readying and cancelling don't wait for the flash to end.
+    lua.execute("fake.write(%d, '\\1')" % (0x21000000 + 0x53a78 + 0x1ee0c))  # the local panel again
+    f.set_flash(3, 0); f.set_timer(0xbf800000); f.frame_step(2)
+    f.set_flash(2, 1); f.set_flash(3, 1); f.frame_step(1)                   # refused: ready
+    check(f.timer() == 0x3fe00000, 'refused with a flash starting: readying')
+    f.frame_step(5)
+    check(f.timer() == 0x3fe00000 and f.press_args == '0x28b0 0x29000000',
+          'a flash showing, no press: nothing (the check asked on the READY prompt with the input object): %r' % f.press_args)
+    n = len(f.sounds)
+    f.ready_pressed = True; f.frame_step(1); f.ready_pressed = False         # pressed again during the flash
+    check(f.timer() == 0xbf800000 and len(f.sounds) == n and 'Ready cancelled (2 empty slot(s))' in log()
+          and poses()[-1] == '0x4242 0x5d1d1963 0 0', 'a press while the flash still shows: cancelled at once, pose stopped')
+    f.frame_step(3)
+    f.ready_pressed = True; f.frame_step(1); f.ready_pressed = False         # and again: ready
+    check(f.timer() == 0x3fe00000 and list(f.sounds.values())[-1] == '0x7947920' and len(f.sounds) == n + 1
+          and poses()[-1] == '0x4242 0x97e150a4 0 0',
+          'pressed again during the flash: readying (the other player is ready: the last ready sound), pose sent')
+    k = len(poses())
+    f.frame_step(2)
+    f.set_timer(0xbf800000); f.ready_pressed = True; f.frame_step(1); f.ready_pressed = False
+    check(f.timer() == 0xbf800000, 'the timer went idle this frame (the handler toggled itself): no second toggle')
+    f.frame_step(2)
+    f.set_flash(2, 0); f.set_flash(3, 0); f.frame_step(1)
+    f.ready_pressed = True; f.frame_step(1); f.ready_pressed = False
+    check(f.timer() == 0xbf800000, 'a press with no flash showing (the handler accepted it): nothing')
+    f.set_flash(2, 1); f.set_list_open(True); f.frame_step(1)
+    f.ready_pressed = True; f.frame_step(1); f.ready_pressed = False
+    check(f.timer() == 0xbf800000 and len(poses()) == k, 'a press while the list is open: nothing (no pose either)')
+    f.set_list_open(False); f.set_unit(0xffffffff); f.frame_step(1)
+    f.ready_pressed = True; f.frame_step(1); f.ready_pressed = False
+    check(f.timer() == 0x3fe00000 and len(poses()) == k, 'no unit (-1): readying, no pose sent')
 
     # 16. A replacement in a full loadout closes the list: it opens again on the next slot (through the grid's focus
     #     setter and the game's opener). Escape (no change), the last slot, a fill of an empty slot and grid mode 1:
@@ -737,6 +789,34 @@ def main():
     check(status.startswith('OK - up to 2') and 'Ready with empty slots: NOT AVAILABLE (code "ready_slots" not found)' in status
           and 'List kept open after a replacement: on' in status,
           'ready code missing: only that extra is off: %r' % status.splitlines()[-2:])
+    lua, logs = new_game(image, build(broken('ready_press')))
+    f = lua.globals().fake
+    f.frame_step(40)
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check('Ready with empty slots: on' in status and 'Ready press during a flash: NOT AVAILABLE (code "ready_press" not found)'
+          in status, 'press check missing: only the press during a flash is off: %r' % status.splitlines()[-5:])
+    lua, logs = new_game(image, build((SIG_ROWS['ready_entry'][0] + SIG_ROWS['ready_entry'][2]['press_call'][1][0],
+                                       (0x10).to_bytes(4, 'little'))))
+    f = lua.globals().fake
+    f.frame_step(40)
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check('Ready press during a flash: NOT AVAILABLE (the ready handler does not call the press check found)' in status,
+          'the handler calling another press check: off: %r' % status.splitlines()[-5:])
+    lua, logs = new_game(image, build(broken('emote_send')))
+    f = lua.globals().fake
+    f.frame_step(40)
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check('Ready press during a flash: on' in status
+          and 'Ready pose with empty slots: NOT AVAILABLE (code "emote_send" not found)' in status,
+          'emote sender missing: only the ready pose is off: %r' % status.splitlines()[-5:])
+    lua, logs = new_game(image, build((SIG_ROWS['ready_emote'][0] + SIG_ROWS['ready_emote'][2]['emote'][1][0],
+                                       (0x10).to_bytes(4, 'little'))))
+    f = lua.globals().fake
+    f.frame_step(40)
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check('Ready with empty slots: on' in status
+          and 'Ready pose with empty slots: NOT AVAILABLE (code "ready_emote"' in status,
+          'the toggle calling another emote sender: the pose is off: %r' % status.splitlines()[-5:])
     lua, logs = new_game(image, build((SIG_ROWS['equip_tail'][0] + SIG_ROWS['equip_tail'][2]['focus_call'][1][0],
                                        (0x10).to_bytes(4, 'little'))))
     f = lua.globals().fake
