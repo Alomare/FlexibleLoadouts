@@ -15,7 +15,9 @@
 -- More, around the list:
 --   * ready with empty slots: the ready handler refuses while fewer slots are filled than min(owned, 4), flashing the
 --     empty ones (slots marked disabled, as by a mission modifier, don't count). The game's update runs before the
---     mod's, so the mod sees the flash start and toggles the ready the handler's way;
+--     mod's, so the mod sees the refusal and toggles the ready the handler's way: a flash starting, or, while a flash
+--     still shows (the handler doesn't flash a slot again then), a Ready press told by the game's own press check.
+--     Like the handler, it tells every peer to start (or stop) the ready pose;
 --   * after a replacement in a full loadout (slot 1 to 3), the equip handler closes the list; the mod focuses the
 --     next slot and opens the list again, as the handler does while slots are still empty, then focuses the
 --     stratagem just picked and puts the list's scroll back where it was;
@@ -30,7 +32,7 @@ if rawget(_G, 'FlexibleStratagems') then return end
 local ffi = require('ffi')
 local bit = require('bit')
 
-local M = {version = '4', frames = 0, errors = 0}
+local M = {version = '5', frames = 0, errors = 0}
 rawset(_G, 'FlexibleStratagems', M)
 
 local loader = rawget(_G, 'CowboyBingusModLoader')
@@ -68,6 +70,14 @@ local SIGS = {
      fields = {slot_flags = {'u32', {3}}, flash = {'u8', {78, 191}}, slot_stride = {'u32', {200}}, ui_sound = {'call', {219}, {223}}}},
     {name = 'ready_toggle', rva = 0x189c4d0, optional = true, text = '4C 8B 05 ?? ?? ?? ?? 8B 87 ?? ?? ?? ?? 45 8B 90 ?? ?? ?? ?? 45 85 D2 74 ?? 4D 8D 88 ?? ?? ?? ?? 49 81 C0 ?? ?? ?? ?? 49 8B 08 39 41 08 74 ?? 83 FB FF 74 ?? 41 8B 11 8B CA C1 E9 03 80 E1 01 75 ?? C1 EA 0B 80 E2 01 74 ?? FF C3 49 83 C0 08 49 83 C1 20 41 3B DA 72 ?? B3 01 80 BF ?? ?? ?? ?? 00 0F 84 ?? ?? ?? ?? F3 0F 10 87 ?? ?? ?? ?? 0F 2E 05 ?? ?? ?? ?? 7A ?? 75 ?? 32 C0 EB ?? 32 DB EB ?? 8B 97 FC ED 01 00 0F 57 DB 41 B8 63 19 1D 5D F3 0F 11 5C 24 20 E8 ?? ?? ?? ?? 48 8B 15 ?? ?? ?? ?? C7 87 ?? ?? ?? ?? ?? ?? ?? ?? 83 BA ?? ?? ?? ?? 01 72 ?? 48 8B 8A ?? ?? ?? ?? F6 41 14 01 74 ?? 83 A2 ?? ?? ?? ?? F7 BA 01 05 0F F5 E8 ?? ?? ?? ?? 48 8B B4 24 F8 00 00 00 B8 04 00 00 00 48 81 C4 D8 00 00 00 5F 5B C3 8B D0 E8 ?? ?? ?? ?? 8B 97 FC ED 01 00 84 C0 75 ?? 0F 57 DB 41 B8 A4 50 E1 97 F3 0F 11 5C 24 20 E8 ?? ?? ?? ?? C7 87 ?? ?? ?? ?? ?? ?? ?? ?? 84 DB 74 ?? BA ?? ?? ?? ?? EB ?? BA ?? ?? ?? ??',
      fields = {player_count = {'u32', {16}}, panel_entity = {'u32', {9}}, panel_local = {'u32', {92}}, ready_timer = {'u32', {107, 165, 274}}, players = {'rip', {3, 159}, {7, 163}}, player_active = {'u32', {175}}, player_entries = {'u32', {35, 185}}, player_flags = {'u32', {28, 197}}, ui_sound = {'call', {208}, {212}}, timer_idle = {'u32', {169}}, ready_time = {'u32', {278}}, sound_ready_last = {'u32', {287}}, sound_ready = {'u32', {294}}}},
+    {name = 'ready_emote', rva = 0x189c552, optional = true, text = '8B 97 ?? ?? ?? ?? 0F 57 DB 41 B8 ?? ?? ?? ?? F3 0F 11 5C 24 20 E8 ?? ?? ?? ?? 48 8B 15 ?? ?? ?? ?? C7 87 ?? ?? ?? ?? 00 00 80 BF 83 BA 88 00 00 00 01 72 ?? 48 8B 8A E8 00 00 00 F6 41 14 01 74 ?? 83 A2 AC 03 00 00 F7 BA 01 05 0F F5 E8 ?? ?? ?? ?? 48 8B B4 24 F8 00 00 00 B8 04 00 00 00 48 81 C4 D8 00 00 00 5F 5B C3 8B D0 E8 ?? ?? ?? ?? 8B 97 ?? ?? ?? ?? 84 C0 75 ?? 0F 57 DB 41 B8 ?? ?? ?? ?? F3 0F 11 5C 24 20 E8 ?? ?? ?? ??',
+     fields = {panel_unit = {'u32', {2, 114}}, emote_cancel = {'u32', {11}}, emote_ready = {'u32', {127}}, emote = {'call', {22, 138}, {26, 142}}, ready_timer = {'u32', {35}}, players = {'rip', {29}, {33}}, ui_sound = {'call', {78}, {82}}}},
+    {name = 'emote_send', rva = 0xbf2e20, optional = true, text = 'F3 0F 11 5C 24 20 4C 8B DC 45 89 43 18 89 54 24 10 48 83 EC 78 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 60 C7 44 24 20 01 00 00 00 49 8D 43 10 C7 44 24 24 04 00 00 00 4D 8D 43 A8 49 89 43 B0 41 B9 04 00 00 00 C7 44 24 30 01 00 00 00 49 8D 43 18 C7 44 24 34 04 00 00 00 48 C7 C2 FF FF FF FF 49 89 43 C0 B9 ?? ?? ?? ?? 49 8D 43 20 C7 44 24 40 02 00 00 00 C7 44 24 44 04 00 00 00 49 89 43 D0 49 8D 43 28 C7 44 24 50 02 00 00 00 C7 44 24 54 04 00 00 00 49 89 43 E0 E8 ?? ?? ?? ??',
+     fields = {emote_rpc = {'u32', {102}}, rpc_send = {'call', {155}, {159}}}},
+    {name = 'ready_entry', rva = 0x189c25a, optional = true, text = '8B 05 ?? ?? ?? ?? 48 8B DA 48 8B F9 39 81 ?? ?? ?? ?? 0F 84 ?? ?? ?? ?? 80 B9 ?? ?? ?? ?? 00 0F 84 ?? ?? ?? ?? 48 81 C1 ?? ?? ?? ?? E8 ?? ?? ?? ??',
+     fields = {panel_entity = {'u32', {14}}, panel_local = {'u32', {26}}, ready_prompt = {'u32', {40}}, press_call = {'call', {45}, {49}}}},
+    {name = 'ready_press', rva = 0x1891850, optional = true, text = '40 53 48 83 EC 20 83 B9 84 2F 00 00 01 48 8B DA 4C 8B D9 0F 84 ?? ?? ?? ?? 4C 8B 89 88 2F 00 00 49 8B C9 E8 ?? ?? ?? ?? 44 8B D0 41 8B C1 4C 6B C0 61 4D 03 D0 49 C1 E2 05 41 80 BC 1A 28 03 00 00 00 75 ?? 41 80 BB 90 2F 00 00 00 4C 8B 15 ?? ?? ?? ??',
+     fields = {input = {'rip', {79}, {83}}}},
     {name = 'equip_tail', rva = 0x146e5f6, optional = true, text = '48 8D 8F ?? ?? ?? ?? 48 C7 C2 FF FF FF FF E8 ?? ?? ?? ?? 83 BF ?? ?? ?? ?? 01 74 ?? 48 8B 2D ?? ?? ?? ?? 4C 8D 9F ?? ?? ?? ?? 41 0F B6 43 FC C0 E8 02 A8 01 75 ?? 41 8B 1B 8D 43 FF 3D 94 00 00 00 0F 87 ?? ?? ?? ?? 8B D3 48 8B CD E8 ?? ?? ?? ?? 48 85 C0 75 ?? 49 8B 04 DE 8B 40 04 85 C0 74 ?? FF C6 49 81 C3 ?? ?? ?? ?? 83 FE 04 72 ?? BA 11 34 75 97 E8 ?? ?? ?? ?? 48 8B CF E8 ?? ?? ?? ?? 8B 87 ?? ?? ?? ?? 48 8D 8F ?? ?? ?? ?? 48 69 D0 ?? ?? ?? ?? 48 83 C2 ?? 48 03 D7 E8 ?? ?? ?? ?? 48 8D 8F ?? ?? ?? ?? E8 ?? ?? ?? ?? 8B 87 ?? ?? ?? ?? 48 69 C8 ?? ?? ?? ?? 48 83 C1 ?? 48 03 CF E8 ?? ?? ?? ?? E9 ?? ?? ?? ?? 83 FE FF 74 ?? 48 8D 8F ?? ?? ?? ?? 8B D6 E8 ?? ?? ?? ?? 89 B7 ?? ?? ?? ??',
      fields = {panels = {'u32', {3}}, slots_changed = {'call', {15}, {19}}, refresh = {'call', {157}, {161}}, list_grid = {'u32', {164}}, grid_refresh = {'call', {169}, {173}}, block_stride = {'u32', {145, 182}}, block_base = {'u8', {152, 189}}, save = {'call', {194}, {198}}, grid_mode = {'u32', {21}}, slot_types = {'u32', {38}}, slot_stride = {'u32', {102}}, ui_sound = {'call', {117}, {121}}, close_list = {'call', {125}, {129}}, local_index = {'u32', {131, 175}}, list = {'u32', {138}}, grid = {'u32', {211}}, focus_call = {'call', {218}, {222}}, edit_slot = {'u32', {224}}}},
     {name = 'open_list', rva = 0x146e9d0, optional = true, text = '40 57 48 81 EC A0 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 70 80 B9 08 28 00 00 00 48 8B F9 0F 85 ?? ?? ?? ?? F7 81 D8 F2 0C 00 00 00 00 08 74 ?? 8B 81 88 F3 0C 00 48 C1 E8 0B A9 FF 07 00 00 0F 85 ?? ?? ?? ?? 0F B6 81 91 39 27 00 48 89 9C 24 B0 00 00 00 48 8D 99 ?? ?? ?? ?? 48 89 AC 24 B8 00 00 00 BD 04 00 00 00 48 89 B4 24 C0 00 00 00 8B F5 0F 29 BC 24 90 00 00 00 44 0F 29 84 24 80 00 00 00 C6 81 ?? ?? ?? ?? 01 88 81 92 39 27 00',
@@ -349,6 +359,8 @@ local OPTION_ID = 'alomare.flexible_stratagems.max_copies'
 -- the players' flag stride, and the ready bits (3: ready, 11: also counted as ready by the handler).
 local SLOT_TYPE, PLAYER_LOCAL, PLAYER_STRIDE, READY_BIT, READY_ALSO = 4, 0x14, 0x20, 8, 0x800
 local READY_SIGS = {'ready_call', 'ready_slots', 'ready_toggle'}
+local PRESS_SIGS = {'ready_entry', 'ready_press'}
+local EMOTE_SIGS = {'ready_emote', 'emote_send'}
 local ADVANCE_SIGS = {'equip_tail', 'open_list', 'focus'}
 local SCROLL_SIGS = {'list_update', 'list_focus'}
 local CLEAR_SIGS = {'equip_tail', 'set_slot'}
@@ -505,7 +517,7 @@ end
 
 -- The list extras (ready with empty slots, the list kept open after a replacement and its scroll, the
 -- clear key): each is on only when all its code is found and fits; otherwise only that extra is off.
-local EXTRA = {ready = false, advance = false, scroll = false, clear = false}
+local EXTRA = {ready = false, press = false, emote = false, advance = false, scroll = false, clear = false}
 local WIDGET = {}  -- the slot widgets: offset from the grid, type offset
 
 local function read_extras()
@@ -529,6 +541,31 @@ local function read_extras()
         if ok then native.sound = fn else why = 'native function sound unavailable' end
     end
     EXTRA.ready, EXTRA.ready_why = not why, why
+    -- A Ready press seen while a flash still shows: the handler's own press check on its prompt, with the input
+    -- object the UI frame hands the screen.
+    why = (not EXTRA.ready and 'needs ready with empty slots') or missing(PRESS_SIGS)
+    if not why and (found.ready_entry < L.ready_handler or found.ready_entry > L.ready_handler + 0x40) then
+        why = 'ready_entry outside the ready handler'
+    end
+    if not why and L.press_call ~= found.ready_press then why = 'the ready handler does not call the press check found' end
+    if not why and (L.ready_prompt < 0x100 or L.ready_prompt >= L.slot_flags) then why = 'panel layout (prompt)' end
+    if not why then
+        local ok, fn = pcall(ffi.cast, 'int32_t (*)(uint64_t, uint64_t)', native.base + found.ready_press)
+        if ok then native.ready_press = fn else why = 'native function press check unavailable' end
+    end
+    EXTRA.press, EXTRA.press_why = not why, why
+    -- The ready pose: the toggle's event for the panel's unit, sent to every peer through the handler's emote sender.
+    why = (not EXTRA.ready and 'needs ready with empty slots') or missing(EMOTE_SIGS)
+    if not why and (found.ready_emote < found.ready_toggle or found.ready_emote > found.ready_toggle + 0x100) then
+        why = 'ready_emote outside the ready toggle'
+    end
+    if not why and L.emote ~= found.emote_send then why = 'the ready toggle does not call the emote sender found' end
+    if not why and (L.panel_unit <= L.panel_entity or L.panel_unit >= L.ready_timer) then why = 'panel layout (unit)' end
+    if not why then
+        local ok, fn = pcall(ffi.cast, 'void (*)(uint64_t, uint32_t, uint32_t, float, float)', native.base + found.emote_send)
+        if ok then native.emote = fn else why = 'native function emote unavailable' end
+    end
+    EXTRA.emote, EXTRA.emote_why = not why, why
     why = missing(ADVANCE_SIGS)
     if not why and L.focus_call ~= found.focus then why = 'the equip handler does not focus with the setter found' end
     if not why and L.slot_flags and L.slot_types ~= L.panels + L.slot_flags + SLOT_TYPE then why = 'slot layout' end
@@ -774,7 +811,8 @@ end
 ---------------------------------------------------------------------------------------
 -- Ready with empty slots
 
-local ready = {flash = nil, now = {}}  -- the local panel's slot flash bytes last frame (nil: not watched)
+-- The local panel's slot flash bytes last frame (nil: not watched), and whether its ready timer was idle.
+local ready = {flash = nil, now = {}, idle = nil}
 
 -- Whether every other player is ready, as the handler decides which ready sound plays.
 local function others_ready(panel, players)
@@ -791,20 +829,30 @@ local function others_ready(panel, players)
     return true
 end
 
+-- The ready pose of the panel's unit, started or stopped for every peer, as the handler's toggle does.
+local function send_pose(panel, event)
+    if not EXTRA.emote then return end
+    local unit = u32(read(panel + L.panel_unit, 4))
+    if unit and unit ~= 0xffffffff then native.emote(0, unit, event, 0, 0) end
+end
+
 -- The handler's toggle for the local panel: an idle timer starts the ready (the panel update sets the ready bit when
 -- it runs out); otherwise the ready is cancelled (the refusal already played the cancel sound, the same one).
+-- Returns whether the timer is idle afterwards (nil: not toggled).
 local function toggle_ready(panel, empty)
     local own = read(panel + L.panel_local, 1)
     local timer = u32(read(panel + L.ready_timer, 4))
     local players = global(L.players)
-    if not own or own:byte() == 0 or not timer or not players then return end
+    if not own or own:byte() == 0 or not timer or not players then return nil end
     if timer == L.timer_idle then
         local last = others_ready(panel, players)
+        send_pose(panel, L.emote_ready)
         write(panel + L.ready_timer, u32_bytes(L.ready_time))
         native.sound(0, last and L.sound_ready_last or L.sound_ready)
         note(string.format('Ready with %d empty slot(s)%s', empty, last and ' (last player)' or ''))
-        return
+        return false
     end
+    send_pose(panel, L.emote_cancel)
     write(panel + L.ready_timer, u32_bytes(L.timer_idle))
     local entries = pointer(read(players + L.player_entries, 8))
     local mine = entries and read(entries + PLAYER_LOCAL, 1)
@@ -814,12 +862,16 @@ local function toggle_ready(panel, empty)
         write(players + L.player_flags, u32_bytes(flags - READY_BIT))
     end
     note(string.format('Ready cancelled (%d empty slot(s))', empty))
+    return true
 end
 
--- While the list is closed: a flash starting on an empty slot is the handler refusing a ready press.
+-- While the list is closed: the handler refused a ready press when a flash starts on an empty slot, or when the
+-- Ready prompt fired while a flash still shows (the handler only flashes slots not flashing yet). Not when the timer
+-- went idle or left idle since last frame: the handler accepted the press and toggled the ready itself.
 local function service_ready(screen, list_open)
     if list_open then ready.flash = nil; return end
-    local base = screen + L.panels + L.slot_flags + L.flash
+    local panel = screen + L.panels
+    local base = panel + L.slot_flags + L.flash
     local now, started, flashing = ready.now, false, 0
     for k = 0, 3 do
         if not read_into(buffers.byte, base + k * L.slot_stride, 1) then ready.flash = nil; return end
@@ -829,8 +881,23 @@ local function service_ready(screen, list_open)
             if ready.flash and ready.flash[k] == 0 then started = true end
         end
     end
+    local timer = u32(read(panel + L.ready_timer, 4))
+    if not timer then ready.flash = nil; return end
+    local idle = timer == L.timer_idle
+    local watched = ready.flash ~= nil and ready.idle ~= nil
     ready.now, ready.flash = ready.flash or {}, now
-    if started then toggle_ready(screen + L.panels, flashing) end
+    if watched and idle == ready.idle then
+        local refused = started
+        if not refused and flashing > 0 and EXTRA.press then
+            local input = global(L.input)
+            refused = input ~= nil and native.ready_press(panel + L.ready_prompt, input) == 1
+        end
+        if refused then
+            local after = toggle_ready(panel, flashing)
+            if after ~= nil then idle = after end
+        end
+    end
+    ready.idle = idle
 end
 
 ---------------------------------------------------------------------------------------
@@ -927,7 +994,7 @@ local function leave_screen()
     restore_vehicles()
     state.screen = nil
     visit.offers, visit.block, visit.refused = nil, nil, nil
-    ready.flash, advance.slot = nil, nil
+    ready.flash, ready.idle, advance.slot = nil, nil, nil
 end
 
 local function loadout_screen()
@@ -966,6 +1033,10 @@ local function report()
                      .. (settings.menu and ' (Mod Options Menu)' or ' (default; Mod Options Menu not found)'),
                      'Game code found ' .. where_found,
                      'Ready with empty slots: ' .. (EXTRA.ready and 'on' or ('NOT AVAILABLE (' .. tostring(EXTRA.ready_why) .. ')')),
+                     'Ready press during a flash: '
+                     .. (EXTRA.press and 'on' or ('NOT AVAILABLE (' .. tostring(EXTRA.press_why) .. ')')),
+                     'Ready pose with empty slots: '
+                     .. (EXTRA.emote and 'on' or ('NOT AVAILABLE (' .. tostring(EXTRA.emote_why) .. ')')),
                      'List kept open after a replacement: '
                      .. (EXTRA.advance and 'on' or ('NOT AVAILABLE (' .. tostring(EXTRA.advance_why) .. ')')),
                      'List scroll kept: ' .. (EXTRA.scroll and 'on' or ('NOT AVAILABLE (' .. tostring(EXTRA.scroll_why) .. ')')),
@@ -996,6 +1067,8 @@ local function finish_start()
     if not good then return unavailable(reason) end
     read_extras()
     if not EXTRA.ready then note('Ready with empty slots not available: ' .. tostring(EXTRA.ready_why)) end
+    if EXTRA.ready and not EXTRA.press then note('Ready press check not available: ' .. tostring(EXTRA.press_why)) end
+    if EXTRA.ready and not EXTRA.emote then note('Ready pose not available: ' .. tostring(EXTRA.emote_why)) end
     if not EXTRA.advance then note('List kept open not available: ' .. tostring(EXTRA.advance_why)) end
     for _, k in ipairs({'scroll', 'clear'}) do
         if not EXTRA[k] then note(k .. ' not available: ' .. tostring(EXTRA[k .. '_why'])) end

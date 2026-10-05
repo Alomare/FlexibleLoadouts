@@ -72,6 +72,24 @@ SPECS = [
                 'ui_sound': (0x1327f50, 'call'), 'timer_idle': (0xbf800000, 'u32'),
                 'ready_time': (0x3fe00000, 'u32'), 'sound_ready_last': (0x7947920, 'u32'),
                 'sound_ready': (0x4d777731, 'u32')}},
+    # The toggle's two branches tell every peer (the ready pose): cancelling sends event 0x5d1d1963 for the panel's unit
+    # (+0x1edfc), readying 0x97e150a4, through the emote sender (unused, unit, event, 0.0, 0.0) ...
+    {'name': 'ready_emote', 'start': 0x189c552, 'end': 0x189c5e0, 'optional': True,
+     'fields': {'panel_unit': (0x1edfc, 'u32'), 'emote_cancel': (0x5d1d1963, 'u32'), 'emote_ready': (0x97e150a4, 'u32'),
+                'emote': (0xbf2e20, 'call'), 'ready_timer': (0x1ee14, 'u32'), 'players': (0x3326468, 'rip'),
+                'ui_sound': (0x1327f50, 'call')}},
+    # ... which sends RPC 0xf24760a9 (unit and event as uints, the two floats) to all peers (-1).
+    {'name': 'emote_send', 'start': 0xbf2e20, 'end': 0xbf2ebf, 'optional': True,
+     'fields': {'emote_rpc': (0xf24760a9, 'u32'), 'rpc_send': (0xbde430, 'call')}},
+    # The handler's start: only for the local panel (entity +0x1edf8, local flag +0x1ee0c), and only when its READY
+    # prompt (+0x28b0) fires, asked of the prompt's press check (prompt, input) ...
+    {'name': 'ready_entry', 'start': 0x189c25a, 'end': 0x189c28b, 'optional': True,
+     'fields': {'panel_entity': (0x1edf8, 'u32'), 'panel_local': (0x1ee0c, 'u32'), 'ready_prompt': (0x28b0, 'u32'),
+                'press_call': (0x1891850, 'call')}},
+    # ... which only reads: the prompt's action pressed this frame, or confirm while hovered / focused, from the UI
+    # input object (the global the UI frame passes down to the loadout screen and so to the handler).
+    {'name': 'ready_press', 'start': 0x1891850, 'end': 0x18918a3, 'optional': True,
+     'fields': {'input': (0x347cf18, 'rip')}},
 
     # Keep the list open after a replacement (optional). After a pick the equip handler looks for the first enabled,
     # empty slot (types at screen + 0x6373c; not in grid mode 1, +0x6f290); with one it focuses it in the panel's grid (+0x595f0) and edits it
