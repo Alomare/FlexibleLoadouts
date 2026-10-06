@@ -1,17 +1,12 @@
 -- HD2-Addon: mods/alomare/flexible_stratagems
 -- Flexible Stratagems by Alomare (formerly Stratagems Unleashed).
 --
--- Lets the Hellpod loadout take the same stratagem more than once, vehicles included: up to 2, 3 or 4 copies of each,
--- set by a Mod Options Menu slider (escape menu > MODS; without it: 2).
--- Two rules are lifted in the stratagem list, on this game only (the loadout then goes out through the game's own
--- sync, so teammates need nothing):
---   * a stratagem already in the loadout is kept selectable: the list's refresh marks the loadout's stratagems as
---     equipped, and a press on an equipped item is refused; the mod marks back those with fewer copies than the limit
---     through the game's own marker, so picking one again runs the game's normal equip (slot, sync, save). After such
---     a pick the list's selection is cleared the game's way, since a press on the selected item plays no pick sound;
---   * one mech, one FRV and one tank: the equip handler moves a second one of a kind into the slot holding the first.
---     Its kind bits (stratagem info flags: 0x100000 mech, 0x200000 FRV, 0x400000 tank) are cleared while the list is
---     open and put back when it closes (or the screen closes, or on any error).
+-- Lets the Hellpod loadout take more than one vehicle of a kind and ready up with fewer than four stratagems.
+-- The vehicle rule is lifted in the stratagem list, on this game only (the loadout then goes out through the game's
+-- own sync, so teammates need nothing): one mech, one FRV and one tank, where the equip handler moves a second one of
+-- a kind into the slot holding the first. Its kind bits (stratagem info flags: 0x100000 mech, 0x200000 FRV, 0x400000
+-- tank) are cleared while the list is open and put back when it closes (or the screen closes, or on any error). A
+-- stratagem already in the loadout stays refused, as in the game.
 -- More, around the list:
 --   * ready with empty slots: the ready handler refuses while fewer slots are filled than min(owned, 4), flashing the
 --     empty ones (slots marked disabled, as by a mission modifier, don't count). The game's update runs before the
@@ -32,7 +27,7 @@ if rawget(_G, 'FlexibleStratagems') then return end
 local ffi = require('ffi')
 local bit = require('bit')
 
-local M = {version = '5', frames = 0, errors = 0}
+local M = {version = '6', frames = 0, errors = 0}
 rawset(_G, 'FlexibleStratagems', M)
 
 local loader = rawget(_G, 'CowboyBingusModLoader')
@@ -54,10 +49,6 @@ local SIGS = {
      fields = {offers = {'rip', {3}, {7}}, first = {'u32', {10}}, last = {'u32', {17}}, indices = {'u32', {29}}, entries = {'u32', {53}}, mark = {'call', {96}, {100}}}},
     {name = 'offers_count', rva = 0x146e1cf, text = '4C 8B 1D ?? ?? ?? ?? 85 D2 74 ?? 45 8B 83 ?? ?? ?? ?? 8B CE 45 85 C0 74 ?? 49 8D 83 ?? ?? ?? ??',
      fields = {offers = {'rip', {3}, {7}}, offers_count = {'u32', {14}}, entries = {'u32', {28}}}},
-    {name = 'marker', rva = 0x18d1440, text = '48 89 74 24 10 57 48 83 EC 20 8B B9 14 1F 09 00 45 33 C9 45 33 DB 41 0F B6 F0 4C 8B D1 85 FF 0F 84 ?? ?? ?? ?? 48 89 5C 24 30 48 8D 99 18 23 09 00 44 8B 03 33 C0 45 85 C0 74 ?? 0F 1F 44 00 00 42 39 94 89 ?? ?? ?? ??',
-     fields = {ids = {'u32', {68}}}},
-    {name = 'select', rva = 0x18d10d0, text = '48 89 4C 24 08 56 41 55 41 56 48 83 EC 30 33 F6 48 89 5C 24 58 45 32 ED 4C 89 64 24 28 8B DA 4C 8B F1 44 8B E6 89 91 ?? ?? ?? ??',
-     fields = {selected = {'u32', {39}}}},
     {name = 'kind_frv', rva = 0x146e2e0, text = '49 8B 0A 39 41 04 74 ?? 41 FF C0 49 83 C2 08 41 81 F8 ?? ?? ?? ?? 72 ?? 44 8B C6 48 8B C3 4C 8B DE EB ?? 44 8B C1 45 8B D8 4B 8B 04 DE F7 80 ?? ?? ?? ?? 00 00 20 00',
      fields = {types = {'u32', {18}}, flags = {'u32', {47}}}},
     {name = 'kind_mech', rva = 0x146e404, text = '45 85 C0 75 ?? 48 8B C3 EB ?? 41 8B C0 49 8B 04 C6 F7 80 ?? ?? ?? ?? 00 00 10 00',
@@ -349,12 +340,9 @@ local BLOCK_MAX, ENTRY_SIZE, LIST_MAX = 32, 0x30, 256   -- entry size and offer 
 local OFFER_STRIDE, OFFER_ID, OFFER_ITEM, INFO_ID = 0x18, 4, 8, 4
 local VEHICLE_BITS = 0x700000                            -- literal in kind_mech / kind_frv / kind_tank
 local IDLE_POLL = 10       -- frames between loadout screen checks while it is not open
-local REQUIRED = {'screen', 'category', 'refresh_call', 'refresh_a', 'refresh_b', 'offers_count', 'marker', 'select',
+local REQUIRED = {'screen', 'category', 'refresh_call', 'refresh_a', 'refresh_b', 'offers_count',
                   'kind_frv', 'kind_mech', 'kind_tank'}
 
--- Copies of one stratagem a loadout may hold: the Mod Options Menu slider (4 copies: no limit in 4 slots).
-local COPIES = {min = 2, max = 4, default = 2}
-local OPTION_ID = 'alomare.flexible_stratagems.max_copies'
 -- Literal in the ready signatures: a slot's type (+4 from its flags), the local player's flag byte (entry + 0x14),
 -- the players' flag stride, and the ready bits (3: ready, 11: also counted as ready by the handler).
 local SLOT_TYPE, PLAYER_LOCAL, PLAYER_STRIDE, READY_BIT, READY_ALSO = 4, 0x14, 0x20, 8, 0x800
@@ -489,24 +477,17 @@ local function read_layout()
     if #code.problems > 0 then return false, code.problems[1] end
     for k, v in pairs(code.values) do L[k] = v end
     local found = code.found
-    -- The functions: the refresh the handler calls holds refresh_a/b and calls the marker found on its own.
-    if L.mark ~= found.marker then return false, 'the refresh does not call the marker' end
+    -- The functions: the refresh the handler calls holds refresh_a/b.
     for _, part in ipairs({'refresh_a', 'refresh_b'}) do
         if found[part] < L.refresh or found[part] > L.refresh + 0x1000 then return false, part .. ' outside the refresh' end
     end
-    -- The spans read each frame: the screen head (local index .. category), the list (count .. selectable bytes),
-    -- a loadout block (entries .. count).
+    -- The spans read each frame: the screen head (local index .. category), the list's item count, a loadout block
+    -- (entries .. count).
     if L.category <= L.local_index or L.category - L.local_index > 0x1000 then return false, 'screen head layout' end
     SCREEN.head, SCREEN.head_size = L.local_index, L.category - L.local_index + 4
     SCREEN.local_index, SCREEN.category = 0, L.category - L.local_index
     SCREEN.blocks, SCREEN.block_size, SCREEN.list = L.block_base, L.block_stride, L.list
-    LIST.span, LIST.count = L.list_count, 0
-    LIST.selected, LIST.ids, LIST.selectable = L.selected - L.list_count, L.ids - L.list_count, L.selectable - L.list_count
-    LIST.span_size = LIST.selectable + LIST_MAX
-    for _, k in ipairs({'selected', 'ids', 'selectable'}) do
-        if LIST[k] < 4 or LIST[k] > 0x1000 then return false, 'list layout (' .. k .. ')' end
-    end
-    if LIST.ids + LIST_MAX * 4 > LIST.selectable then return false, 'list layout (ids)' end
+    LIST.count = L.list_count
     BLOCK.entries, BLOCK.count = L.block_entries, L.block_count
     if BLOCK.count < BLOCK.entries + BLOCK_MAX * ENTRY_SIZE or BLOCK.count >= SCREEN.block_size then
         return false, 'loadout block layout'
@@ -639,13 +620,10 @@ local function offer_map()
 end
 
 ---------------------------------------------------------------------------------------
--- Settings: the copy limit (Mod Options Menu, which may load before or after this addon)
+-- Texts for Mod Bindings Menu: version 3 and later take texts as functions and call them whenever its menu opens, so
+-- they follow the game's language; older versions take strings with byte limits, where a translation that does not
+-- fit stays English.
 
-local settings = {max_copies = COPIES.default, menu = nil, dirty = false}  -- dirty: status to rewrite
-
--- Mod Options Menu v1.1 and later (version 2) take texts as functions and call them whenever the escape menu opens,
--- so they follow the game's language; v1.0 takes strings with byte limits, where a translation that does not fit
--- stays English.
 local text_functions = {}
 local function host_text(menu, functions_from, key, bytes)
     if (tonumber(menu.version) or 1) >= functions_from then
@@ -655,38 +633,6 @@ local function host_text(menu, functions_from, key, bytes)
     end
     local value = tr(key)
     return #value <= bytes and value or tr.english[key]
-end
-
-local function option_text(menu, key, bytes) return host_text(menu, 2, key, bytes) end
-
-local copies_changed  -- defined with the list below
-
-local function set_max_copies(value)
-    value = math.floor(tonumber(value) or COPIES.default)
-    value = math.max(COPIES.min, math.min(COPIES.max, value))
-    if value == settings.max_copies then return end
-    note('Copies per stratagem: ' .. value)
-    settings.max_copies = value
-    copies_changed()
-end
-
-local function connect_menu()
-    local menu = rawget(_G, 'ModOptionsMenu')
-    if type(menu) ~= 'table' or menu.api ~= 1 then return false end
-    settings.menu = menu
-    local ok, done, why = pcall(menu.register_option, OPTION_ID, {
-        type = 'slider', mod = option_text(menu, 'option.mod', 40), label = option_text(menu, 'option.copies.label', 64),
-        min = COPIES.min, max = COPIES.max, step = 1, default = COPIES.default,
-        description = option_text(menu, 'option.copies.description', 400)})
-    if ok and done then
-        pcall(menu.on_change, OPTION_ID, function(value) set_max_copies(value) end)
-        local read_ok, value = pcall(menu.get, OPTION_ID)
-        set_max_copies(read_ok and value)
-        note('Mod Options Menu connected (version ' .. tostring(menu.version or 1) .. ')')
-    else
-        note('Option not registered: ' .. tostring(ok and why or done))
-    end
-    return true
 end
 
 ---------------------------------------------------------------------------------------
@@ -735,77 +681,22 @@ end
 -- The stratagem list
 
 local buffers = {}  -- sized from the layout once it is known
-local visit = {offers = nil, block = nil, refused = nil}  -- per loadout screen visit
+local visit = {offers = nil}  -- per loadout screen visit
 
 local function make_buffers()
     buffers.global = ffi.new('uint8_t[8]')
     buffers.stack = ffi.new('uint8_t[?]', L.slot + 8)
     buffers.head = ffi.new('uint8_t[?]', SCREEN.head_size)
-    buffers.list = ffi.new('uint8_t[?]', LIST.span_size)
+    buffers.list = ffi.new('uint8_t[4]')
     buffers.block = ffi.new('uint8_t[?]', BLOCK.count - BLOCK.entries + 4)
     buffers.byte = ffi.new('uint8_t[1]')
 end
 
--- The loadout's stratagems as {offer id = copies}, plus the entries as a string (to notice picks).
-local function loadout_offers(screen, index)
-    local block = screen + SCREEN.blocks + index * SCREEN.block_size
-    if not read_into(buffers.block, block + BLOCK.entries, BLOCK.count - BLOCK.entries + 4) then return nil end
-    local count = buf_u32(buffers.block, BLOCK.count - BLOCK.entries)
-    if count > BLOCK_MAX then return nil end
-    visit.offers = visit.offers or offer_map()
-    local copies = {}
-    for e = 0, count - 1 do
-        local offer = visit.offers[item_id(buf_u32(buffers.block, e * ENTRY_SIZE))]
-        if offer then copies[offer] = (copies[offer] or 0) + 1 end
-    end
-    return copies, ffi.string(buffers.block, count * ENTRY_SIZE)
-end
-
-local function service_list(screen, index)
-    local list = screen + SCREEN.list
-    local list_buf = buffers.list
-    if not read_into(list_buf, list + LIST.span, LIST.span_size) then return end
-    local n = buf_u32(list_buf, LIST.count)
-    if n == 0 or n > LIST_MAX then restore_vehicles(); return end
-    lift_vehicles()
-    -- Refused items: none in steady state (the loadout's are marked back); after a pick the refresh refuses the
-    -- loadout's again. The same refused set as last time (other reasons, or the copy limit) is left alone without
-    -- reading more.
-    local refused = nil
-    for i = 0, n - 1 do
-        if list_buf[LIST.selectable + i] == 0 then
-            refused = refused or {}
-            refused[#refused + 1] = i
-        end
-    end
-    if not refused then visit.refused = nil; return end
-    local key = table.concat(refused, ',')
-    if key == visit.refused then return end
-    local copies, block = loadout_offers(screen, index)
-    if not copies then return end
-    if visit.block and block ~= visit.block then
-        -- A pick: a selection left on a loadout stratagem would silence the next pick of it.
-        local selected = buf_u32(list_buf, LIST.selected)
-        if selected ~= 0 and copies[selected] then native.select(list, 0) end
-    end
-    visit.block = block
-    local limit = settings.max_copies
-    local kept = {}
-    for _, i in ipairs(refused) do
-        local offer = buf_u32(list_buf, LIST.ids + i * 4)
-        if copies[offer] and copies[offer] < limit then
-            native.mark(list, offer, 1)
-        else
-            kept[#kept + 1] = i
-        end
-    end
-    visit.refused = #kept > 0 and table.concat(kept, ',') or nil
-end
-
-copies_changed = function()
-    -- The refused items are looked at again under the new limit.
-    visit.refused = nil
-    settings.dirty = true
+-- The vehicle rule is lifted while the list holds items (it is open), and put back when it is empty.
+local function service_list(screen)
+    if not read_into(buffers.list, screen + SCREEN.list + LIST.count, 4) then return end
+    local n = buf_u32(buffers.list, 0)
+    if n == 0 or n > LIST_MAX then restore_vehicles() else lift_vehicles() end
 end
 
 ---------------------------------------------------------------------------------------
@@ -993,7 +884,7 @@ local state = {ready = false, screen = nil}
 local function leave_screen()
     restore_vehicles()
     state.screen = nil
-    visit.offers, visit.block, visit.refused = nil, nil, nil
+    visit.offers = nil
     ready.flash, ready.idle, advance.slot = nil, nil, nil
 end
 
@@ -1023,15 +914,13 @@ local function step()
         if clear then clear_loadout(screen, index, list_open) end
     end
     if category ~= STRATAGEMS or index > 3 then restore_vehicles(); return end
-    service_list(screen, index)
+    service_list(screen)
 end
 
 local where_found = ''
 
 local function report()
-    local details = {'Copies per stratagem: ' .. settings.max_copies
-                     .. (settings.menu and ' (Mod Options Menu)' or ' (default; Mod Options Menu not found)'),
-                     'Game code found ' .. where_found,
+    local details = {'Game code found ' .. where_found,
                      'Ready with empty slots: ' .. (EXTRA.ready and 'on' or ('NOT AVAILABLE (' .. tostring(EXTRA.ready_why) .. ')')),
                      'Ready press during a flash: '
                      .. (EXTRA.press and 'on' or ('NOT AVAILABLE (' .. tostring(EXTRA.press_why) .. ')')),
@@ -1042,8 +931,7 @@ local function report()
                      'List scroll kept: ' .. (EXTRA.scroll and 'on' or ('NOT AVAILABLE (' .. tostring(EXTRA.scroll_why) .. ')')),
                      'Clear Stratagems key: '
                      .. (EXTRA.clear and 'on' or ('NOT AVAILABLE (' .. tostring(EXTRA.clear_why) .. ')'))}
-    write_status('OK - up to ' .. settings.max_copies .. ' of each stratagem can be picked in the Hellpod loadout',
-                 details)
+    write_status('OK - more than one vehicle of a kind can be picked in the Hellpod loadout', details)
 end
 
 local function unavailable(reason)
@@ -1055,15 +943,6 @@ end
 -- With the code located: the layout, the native functions, then ready.
 local function finish_start()
     local good, reason = read_layout()
-    if good then
-        for name, sig in pairs({mark = 'marker', select = 'select'}) do
-            local ctype = name == 'mark' and 'void (*)(uint64_t, uint32_t, uint8_t)'  -- (list, offer, selectable)
-                          or 'uint8_t (*)(uint64_t, uint32_t)'                         -- (list, offer or 0)
-            local cast_ok, fn = pcall(ffi.cast, ctype, code:address(sig))
-            if not cast_ok then good, reason = false, 'native function ' .. name .. ' unavailable' end
-            native[name] = fn
-        end
-    end
     if not good then return unavailable(reason) end
     read_extras()
     if not EXTRA.ready then note('Ready with empty slots not available: ' .. tostring(EXTRA.ready_why)) end
@@ -1101,13 +980,11 @@ end
 
 local function frame()
     M.frames = M.frames + 1
-    if not settings.menu then connect_menu() end
     if M.frames == 1 then
         start()
     elseif code and code.scan then
         if code:step() then finish_start() end
     elseif state.ready then
-        if settings.dirty then settings.dirty = false; report() end
         step()
     end
 end
@@ -1130,6 +1007,5 @@ update = function(dt, ...)
 end
 
 note('Flexible Stratagems ' .. M.version .. ' loaded')
-M._test = {state = state, visit = visit, code = function() return code end, layout = L, settings = settings,
-           extra = EXTRA}
+M._test = {state = state, visit = visit, code = function() return code end, layout = L, extra = EXTRA}
 return M
