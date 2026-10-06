@@ -2,6 +2,11 @@
 
 Releases are named "Flexible Stratagems V&lt;n&gt;" (tag `v<n>`). Each section is that release's notes. Versions 1 and 2 were released as Stratagems Unleashed.
 
+## V6 (2026-10-06)
+
+- Removed picking the same stratagem more than once, and the Copies per Stratagem option.
+- You can still bring more than one vehicle of a kind, such as two different mechs.
+
 ## V5 (2026-10-05)
 
 - Fixed: after readying with fewer than four stratagems, pressing Ready again right away was ignored for about two seconds. It now cancels (or readies) on the first press.

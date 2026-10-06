@@ -3,12 +3,11 @@
     "guid": "6939fac7-0205-4e09-914b-827ab7913fe0",
     "displayName": "Flexible Stratagems",
     "entry": "flexible_stratagems.lua",
-    "version": "5",
+    "version": "6",
     "icon": "icon.png",
-    "description": "Bring the same stratagem more than once in the Hellpod loadout, vehicles included, and ready up with fewer than four. Set how many copies are allowed (2 to 4) with Mod Options Menu.",
+    "description": "Bring more than one vehicle of a kind in the Hellpod loadout and ready up with fewer than four stratagems.",
     "requires": [
         "Bingus Shared Loader v17 or newer",
-        "Mod Options Menu (optional: the copies setting)",
         "Mod Bindings Menu (optional: the Clear Stratagems key)"
     ]
 }
