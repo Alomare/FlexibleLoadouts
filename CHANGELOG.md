@@ -2,6 +2,12 @@
 
 Releases are named "Flexible Stratagems V&lt;n&gt;" (tag `v<n>`). Each section is that release's notes. Versions 1 and 2 were released as Stratagems Unleashed.
 
+## V7 (2026-10-07)
+
+- Each release now has two files. Install one of them.
+- `Flexible-Stratagems-7-Plus.zip`: pick the same stratagem more than once, up to all four slots, vehicles included. There is no Copies per Stratagem option.
+- `Flexible-Stratagems-7.zip`: no duplicate stratagems and one vehicle of a kind, as in the game. Ready with fewer than four stratagems, the list kept open and Clear Stratagems are in both files.
+
 ## V6 (2026-10-06)
 
 - Removed picking the same stratagem more than once, and the Copies per Stratagem option.
