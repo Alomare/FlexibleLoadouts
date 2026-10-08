@@ -1,4 +1,4 @@
-<img width="1920" height="1080" alt="thumbnail" src="https://github.com/user-attachments/assets/addd47a5-e441-4b49-bc67-edb14e03e816" />
+<img width="1920" height="1080" alt="thumbnail" src="https://github.com/user-attachments/assets/fcefa852-d75b-4de4-9d37-4d6b428b21d6" />
 
 # Flexible Stratagems
 
