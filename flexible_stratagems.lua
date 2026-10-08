@@ -1,13 +1,24 @@
 -- HD2-Addon: mods/alomare/flexible_stratagems
 -- Flexible Stratagems by Alomare (formerly Stratagems Unleashed).
 --
--- Lets the Hellpod loadout take more than one vehicle of a kind and ready up with fewer than four stratagems.
--- The vehicle rule is lifted in the stratagem list, on this game only (the loadout then goes out through the game's
--- own sync, so teammates need nothing): one mech, one FRV and one tank, where the equip handler moves a second one of
--- a kind into the slot holding the first. Its kind bits (stratagem info flags: 0x100000 mech, 0x200000 FRV, 0x400000
--- tank) are cleared while the list is open and put back when it closes (or the screen closes, or on any error). A
--- stratagem already in the loadout stays refused, as in the game.
+-- BEGIN PLUS
+-- This script is the Plus edition. The build (tools/entry.py in the author's workspace) also makes the standard
+-- edition from it: without the lines from a BEGIN PLUS line to its END PLUS line, without the lines ending in a
+-- PLUS comment, and with the code of the STANDARD comment lines.
+--
+-- Lets the Hellpod loadout take the same stratagem more than once (up to all four slots), vehicles included.
+-- Two rules are lifted in the stratagem list, on this game only (the loadout then goes out through the game's own
+-- sync, so teammates need nothing):
+--   * a stratagem already in the loadout is kept selectable: the list's refresh marks the loadout's stratagems as
+--     equipped, and a press on an equipped item is refused; the mod marks them back through the game's own marker,
+--     so picking one again runs the game's normal equip (slot, sync, save). After such a pick the list's selection
+--     is cleared the game's way, since a press on the selected item plays no pick sound;
+--   * one mech, one FRV and one tank: the equip handler moves a second one of a kind into the slot holding the first.
+--     Its kind bits (stratagem info flags: 0x100000 mech, 0x200000 FRV, 0x400000 tank) are cleared while the list is
+--     open and put back when it closes (or the screen closes, or on any error).
 -- More, around the list:
+-- END PLUS
+-- STANDARD: -- Makes the stratagem slots of the Hellpod loadout easier to work with:
 --   * ready with empty slots: the ready handler refuses while fewer slots are filled than min(owned, 4), flashing the
 --     empty ones (slots marked disabled, as by a mission modifier, don't count). The game's update runs before the
 --     mod's, so the mod sees the refusal and toggles the ready the handler's way: a flash starting, or, while a flash
@@ -27,7 +38,9 @@ if rawget(_G, 'FlexibleStratagems') then return end
 local ffi = require('ffi')
 local bit = require('bit')
 
-local M = {version = '6', frames = 0, errors = 0}
+local M = {version = '7', frames = 0, errors = 0}
+local TITLE = 'Flexible Stratagems ' .. M.version
+M.edition, TITLE = 'Plus', TITLE .. ' Plus'  -- PLUS
 rawset(_G, 'FlexibleStratagems', M)
 
 local loader = rawget(_G, 'CowboyBingusModLoader')
@@ -49,12 +62,18 @@ local SIGS = {
      fields = {offers = {'rip', {3}, {7}}, first = {'u32', {10}}, last = {'u32', {17}}, indices = {'u32', {29}}, entries = {'u32', {53}}, mark = {'call', {96}, {100}}}},
     {name = 'offers_count', rva = 0x146e1cf, text = '4C 8B 1D ?? ?? ?? ?? 85 D2 74 ?? 45 8B 83 ?? ?? ?? ?? 8B CE 45 85 C0 74 ?? 49 8D 83 ?? ?? ?? ??',
      fields = {offers = {'rip', {3}, {7}}, offers_count = {'u32', {14}}, entries = {'u32', {28}}}},
+    -- BEGIN PLUS
+    {name = 'marker', rva = 0x18d1440, text = '48 89 74 24 10 57 48 83 EC 20 8B B9 14 1F 09 00 45 33 C9 45 33 DB 41 0F B6 F0 4C 8B D1 85 FF 0F 84 ?? ?? ?? ?? 48 89 5C 24 30 48 8D 99 18 23 09 00 44 8B 03 33 C0 45 85 C0 74 ?? 0F 1F 44 00 00 42 39 94 89 ?? ?? ?? ??',
+     fields = {ids = {'u32', {68}}}},
+    {name = 'select', rva = 0x18d10d0, text = '48 89 4C 24 08 56 41 55 41 56 48 83 EC 30 33 F6 48 89 5C 24 58 45 32 ED 4C 89 64 24 28 8B DA 4C 8B F1 44 8B E6 89 91 ?? ?? ?? ??',
+     fields = {selected = {'u32', {39}}}},
     {name = 'kind_frv', rva = 0x146e2e0, text = '49 8B 0A 39 41 04 74 ?? 41 FF C0 49 83 C2 08 41 81 F8 ?? ?? ?? ?? 72 ?? 44 8B C6 48 8B C3 4C 8B DE EB ?? 44 8B C1 45 8B D8 4B 8B 04 DE F7 80 ?? ?? ?? ?? 00 00 20 00',
      fields = {types = {'u32', {18}}, flags = {'u32', {47}}}},
     {name = 'kind_mech', rva = 0x146e404, text = '45 85 C0 75 ?? 48 8B C3 EB ?? 41 8B C0 49 8B 04 C6 F7 80 ?? ?? ?? ?? 00 00 10 00',
      fields = {flags = {'u32', {19}}}},
     {name = 'kind_tank', rva = 0x146e4f5, text = '48 8B C3 45 85 C0 74 ?? 4B 8B 04 DE F7 80 ?? ?? ?? ?? 00 00 40 00',
      fields = {flags = {'u32', {14}}}},
+    -- END PLUS
     {name = 'ready_call', rva = 0x146d9fb, optional = true, text = '0F B6 83 ?? ?? ?? ?? 33 FF 84 C0 75 ?? 48 8D 8B ?? ?? ?? ?? 49 8B D7 E8 ?? ?? ?? ??',
      fields = {list_open = {'u32', {3}}, panels = {'u32', {16}}, ready_handler = {'call', {24}, {28}}}},
     {name = 'ready_slots', rva = 0x189c3b8, optional = true, text = '48 81 C7 ?? ?? ?? ?? 0F 29 BC 24 A0 00 00 00 0F 57 F6 F3 0F 10 3D ?? ?? ?? ?? 44 0F 29 84 24 90 00 00 00 F3 44 0F 10 05 ?? ?? ?? ?? 44 0F 29 8C 24 80 00 00 00 F3 44 0F 10 0D ?? ?? ?? ?? 85 F6 0F 84 ?? ?? ?? ?? 83 7F 04 00 75 ?? 80 7F ?? 00 75 ?? 0F B6 07 C0 E8 02 A8 01 75 ?? 0F 57 C0 F3 0F 11 74 24 40 66 0F 7F 44 24 70 48 8D 8F 10 F5 FF FF 41 0F 28 C0 C7 44 24 68 83 82 82 3E 8B 44 24 68 48 8D 54 24 50 89 44 24 58 41 B1 01 48 8D 44 24 70 41 0F 14 C1 48 89 44 24 38 0F 28 D7 F3 0F 11 74 24 30 C6 44 24 28 01 C7 44 24 20 02 00 00 00 F2 0F 11 44 24 50 E8 ?? ?? ?? ?? C6 47 ?? 01 FF CE FF C3 48 81 C7 ?? ?? ?? ?? 83 FB 04 0F 82 ?? ?? ?? ?? BA 01 05 0F F5 E8 ?? ?? ?? ??',
@@ -69,8 +88,8 @@ local SIGS = {
      fields = {panel_entity = {'u32', {14}}, panel_local = {'u32', {26}}, ready_prompt = {'u32', {40}}, press_call = {'call', {45}, {49}}}},
     {name = 'ready_press', rva = 0x1891850, optional = true, text = '40 53 48 83 EC 20 83 B9 84 2F 00 00 01 48 8B DA 4C 8B D9 0F 84 ?? ?? ?? ?? 4C 8B 89 88 2F 00 00 49 8B C9 E8 ?? ?? ?? ?? 44 8B D0 41 8B C1 4C 6B C0 61 4D 03 D0 49 C1 E2 05 41 80 BC 1A 28 03 00 00 00 75 ?? 41 80 BB 90 2F 00 00 00 4C 8B 15 ?? ?? ?? ??',
      fields = {input = {'rip', {79}, {83}}}},
-    {name = 'equip_tail', rva = 0x146e5f6, optional = true, text = '48 8D 8F ?? ?? ?? ?? 48 C7 C2 FF FF FF FF E8 ?? ?? ?? ?? 83 BF ?? ?? ?? ?? 01 74 ?? 48 8B 2D ?? ?? ?? ?? 4C 8D 9F ?? ?? ?? ?? 41 0F B6 43 FC C0 E8 02 A8 01 75 ?? 41 8B 1B 8D 43 FF 3D 94 00 00 00 0F 87 ?? ?? ?? ?? 8B D3 48 8B CD E8 ?? ?? ?? ?? 48 85 C0 75 ?? 49 8B 04 DE 8B 40 04 85 C0 74 ?? FF C6 49 81 C3 ?? ?? ?? ?? 83 FE 04 72 ?? BA 11 34 75 97 E8 ?? ?? ?? ?? 48 8B CF E8 ?? ?? ?? ?? 8B 87 ?? ?? ?? ?? 48 8D 8F ?? ?? ?? ?? 48 69 D0 ?? ?? ?? ?? 48 83 C2 ?? 48 03 D7 E8 ?? ?? ?? ?? 48 8D 8F ?? ?? ?? ?? E8 ?? ?? ?? ?? 8B 87 ?? ?? ?? ?? 48 69 C8 ?? ?? ?? ?? 48 83 C1 ?? 48 03 CF E8 ?? ?? ?? ?? E9 ?? ?? ?? ?? 83 FE FF 74 ?? 48 8D 8F ?? ?? ?? ?? 8B D6 E8 ?? ?? ?? ?? 89 B7 ?? ?? ?? ??',
-     fields = {panels = {'u32', {3}}, slots_changed = {'call', {15}, {19}}, refresh = {'call', {157}, {161}}, list_grid = {'u32', {164}}, grid_refresh = {'call', {169}, {173}}, block_stride = {'u32', {145, 182}}, block_base = {'u8', {152, 189}}, save = {'call', {194}, {198}}, grid_mode = {'u32', {21}}, slot_types = {'u32', {38}}, slot_stride = {'u32', {102}}, ui_sound = {'call', {117}, {121}}, close_list = {'call', {125}, {129}}, local_index = {'u32', {131, 175}}, list = {'u32', {138}}, grid = {'u32', {211}}, focus_call = {'call', {218}, {222}}, edit_slot = {'u32', {224}}}},
+    {name = 'equip_tail', rva = 0x146e5f6, optional = true, text = '48 8D 8F ?? ?? ?? ?? 48 C7 C2 FF FF FF FF E8 ?? ?? ?? ?? 83 BF ?? ?? ?? ?? 01 74 ?? 48 8B 2D ?? ?? ?? ?? 4C 8D 9F ?? ?? ?? ?? 41 0F B6 43 FC C0 E8 02 A8 01 75 ?? 41 8B 1B 8D 43 FF 3D ?? ?? ?? ?? 0F 87 ?? ?? ?? ?? 8B D3 48 8B CD E8 ?? ?? ?? ?? 48 85 C0 75 ?? 49 8B 04 DE 8B 40 04 85 C0 74 ?? FF C6 49 81 C3 ?? ?? ?? ?? 83 FE 04 72 ?? BA 11 34 75 97 E8 ?? ?? ?? ?? 48 8B CF E8 ?? ?? ?? ?? 8B 87 ?? ?? ?? ?? 48 8D 8F ?? ?? ?? ?? 48 69 D0 ?? ?? ?? ?? 48 83 C2 ?? 48 03 D7 E8 ?? ?? ?? ?? 48 8D 8F ?? ?? ?? ?? E8 ?? ?? ?? ?? 8B 87 ?? ?? ?? ?? 48 69 C8 ?? ?? ?? ?? 48 83 C1 ?? 48 03 CF E8 ?? ?? ?? ?? E9 ?? ?? ?? ?? 83 FE FF 74 ?? 48 8D 8F ?? ?? ?? ?? 8B D6 E8 ?? ?? ?? ?? 89 B7 ?? ?? ?? ??',
+     fields = {panels = {'u32', {3}}, slots_changed = {'call', {15}, {19}}, refresh = {'call', {157}, {161}}, list_grid = {'u32', {164}}, grid_refresh = {'call', {169}, {173}}, block_stride = {'u32', {145, 182}}, block_base = {'u8', {152, 189}}, save = {'call', {194}, {198}}, grid_mode = {'u32', {21}}, slot_types = {'u32', {38}}, slot_stride = {'u32', {102}}, ui_sound = {'call', {117}, {121}}, close_list = {'call', {125}, {129}}, local_index = {'u32', {131, 175}}, list = {'u32', {138}}, grid = {'u32', {211}}, focus_call = {'call', {218}, {222}}, edit_slot = {'u32', {224}}, type_last = {'u32', {61}}}},
     {name = 'open_list', rva = 0x146e9d0, optional = true, text = '40 57 48 81 EC A0 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 70 80 B9 08 28 00 00 00 48 8B F9 0F 85 ?? ?? ?? ?? F7 81 D8 F2 0C 00 00 00 00 08 74 ?? 8B 81 88 F3 0C 00 48 C1 E8 0B A9 FF 07 00 00 0F 85 ?? ?? ?? ?? 0F B6 81 91 39 27 00 48 89 9C 24 B0 00 00 00 48 8D 99 ?? ?? ?? ?? 48 89 AC 24 B8 00 00 00 BD 04 00 00 00 48 89 B4 24 C0 00 00 00 8B F5 0F 29 BC 24 90 00 00 00 44 0F 29 84 24 80 00 00 00 C6 81 ?? ?? ?? ?? 01 88 81 92 39 27 00',
      fields = {panels = {'u32', {91}}, list_open = {'u32', {137}}}},
     {name = 'set_slot', rva = 0x189d050, optional = true, text = '83 FA 04 0F 83 ?? ?? ?? ?? 48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 41 8B D8 8B F2 48 8D B9 78 5B 00 00 8B CB E8 ?? ?? ?? ?? 48 69 CE ?? ?? ?? ?? 8B D0 48 81 C1 ?? ?? ?? ?? 48 03 CF E8 ?? ?? ?? ?? 80 BF 78 D9 00 00 00',
@@ -338,10 +357,12 @@ end
 local LOADOUT_SCREEN, STRATAGEMS = 11, 10
 local BLOCK_MAX, ENTRY_SIZE, LIST_MAX = 32, 0x30, 256   -- entry size and offer entry layout are literal in refresh_a/b
 local OFFER_STRIDE, OFFER_ID, OFFER_ITEM, INFO_ID = 0x18, 4, 8, 4
-local VEHICLE_BITS = 0x700000                            -- literal in kind_mech / kind_frv / kind_tank
 local IDLE_POLL = 10       -- frames between loadout screen checks while it is not open
-local REQUIRED = {'screen', 'category', 'refresh_call', 'refresh_a', 'refresh_b', 'offers_count',
-                  'kind_frv', 'kind_mech', 'kind_tank'}
+local REQUIRED = {'screen', 'category', 'refresh_call', 'refresh_a', 'refresh_b', 'offers_count'}
+-- BEGIN PLUS
+for _, name in ipairs({'marker', 'select', 'kind_frv', 'kind_mech', 'kind_tank'}) do REQUIRED[#REQUIRED + 1] = name end
+local VEHICLE_BITS = 0x700000                            -- literal in kind_mech / kind_frv / kind_tank
+-- END PLUS
 
 -- Literal in the ready signatures: a slot's type (+4 from its flags), the local player's flag byte (entry + 0x14),
 -- the players' flag stride, and the ready bits (3: ready, 11: also counted as ready by the handler).
@@ -380,7 +401,7 @@ local function write_status(verdict, details)
     local f = open_log('FlexibleStratagems_STATUS.log')
     if not f then return end
     pcall(function()
-        f:write(verdict .. '\nFlexible Stratagems ' .. M.version .. '\n')
+        f:write(verdict .. '\n' .. TITLE .. '\n')
         for _, line in ipairs(details or {}) do f:write(line .. '\n') end
         f:close()
     end)
@@ -467,7 +488,8 @@ local function buf_pointer(buf, offset) return pointer_value(ffi.cast('uint64_t 
 
 local code = nil  -- the signature engine
 local L = {}      -- field name -> value (offsets) or rva (globals, functions)
-local SCREEN, LIST, BLOCK = {}, {}, {}
+local SCREEN, BLOCK = {}, {}
+local LIST = {}  -- PLUS
 
 -- Checks the pieces fit together (the engine already made every field agree across signatures).
 local function read_layout()
@@ -478,21 +500,33 @@ local function read_layout()
     for k, v in pairs(code.values) do L[k] = v end
     local found = code.found
     -- The functions: the refresh the handler calls holds refresh_a/b.
+    if L.mark ~= found.marker then return false, 'the refresh does not call the marker' end  -- PLUS
     for _, part in ipairs({'refresh_a', 'refresh_b'}) do
         if found[part] < L.refresh or found[part] > L.refresh + 0x1000 then return false, part .. ' outside the refresh' end
     end
-    -- The spans read each frame: the screen head (local index .. category), the list's item count, a loadout block
-    -- (entries .. count).
+    -- The spans read each frame: the screen head (local index .. category), a loadout block (entries .. count).
     if L.category <= L.local_index or L.category - L.local_index > 0x1000 then return false, 'screen head layout' end
     SCREEN.head, SCREEN.head_size = L.local_index, L.category - L.local_index + 4
     SCREEN.local_index, SCREEN.category = 0, L.category - L.local_index
     SCREEN.blocks, SCREEN.block_size, SCREEN.list = L.block_base, L.block_stride, L.list
-    LIST.count = L.list_count
+    -- BEGIN PLUS
+    -- ... and the list (count .. selectable bytes).
+    LIST.span, LIST.count = L.list_count, 0
+    LIST.selected, LIST.ids, LIST.selectable = L.selected - L.list_count, L.ids - L.list_count, L.selectable - L.list_count
+    LIST.span_size = LIST.selectable + LIST_MAX
+    for _, k in ipairs({'selected', 'ids', 'selectable'}) do
+        if LIST[k] < 4 or LIST[k] > 0x1000 then return false, 'list layout (' .. k .. ')' end
+    end
+    if LIST.ids + LIST_MAX * 4 > LIST.selectable then return false, 'list layout (ids)' end
+    -- END PLUS
     BLOCK.entries, BLOCK.count = L.block_entries, L.block_count
     if BLOCK.count < BLOCK.entries + BLOCK_MAX * ENTRY_SIZE or BLOCK.count >= SCREEN.block_size then
         return false, 'loadout block layout'
     end
-    if L.types < 2 or L.types > 0x1000 then return false, 'stratagem table size' end
+    -- The stratagem table's size (0: unknown, no stratagem is looked up): the equip handler's slot search has its
+    -- last type but one.
+    L.types = L.types or (L.type_last and L.type_last + 2) or 0
+    if L.types ~= 0 and (L.types < 2 or L.types > 0x1000) then return false, 'stratagem table size' end
     return true
 end
 
@@ -635,6 +669,7 @@ local function host_text(menu, functions_from, key, bytes)
     return #value <= bytes and value or tr.english[key]
 end
 
+-- BEGIN PLUS
 ---------------------------------------------------------------------------------------
 -- The vehicle rule: kind bits cleared while the list is open, restored after.
 
@@ -676,6 +711,7 @@ local function restore_vehicles()
         if u32(read(v[1] + L.flags, 4)) == v[3] then write(v[1] + L.flags, u32_bytes(v[2])) end
     end
 end
+-- END PLUS
 
 ---------------------------------------------------------------------------------------
 -- The stratagem list
@@ -687,17 +723,67 @@ local function make_buffers()
     buffers.global = ffi.new('uint8_t[8]')
     buffers.stack = ffi.new('uint8_t[?]', L.slot + 8)
     buffers.head = ffi.new('uint8_t[?]', SCREEN.head_size)
-    buffers.list = ffi.new('uint8_t[4]')
+    buffers.list = ffi.new('uint8_t[?]', LIST.span_size)  -- PLUS
     buffers.block = ffi.new('uint8_t[?]', BLOCK.count - BLOCK.entries + 4)
     buffers.byte = ffi.new('uint8_t[1]')
 end
 
--- The vehicle rule is lifted while the list holds items (it is open), and put back when it is empty.
-local function service_list(screen)
-    if not read_into(buffers.list, screen + SCREEN.list + LIST.count, 4) then return end
-    local n = buf_u32(buffers.list, 0)
-    if n == 0 or n > LIST_MAX then restore_vehicles() else lift_vehicles() end
+-- BEGIN PLUS
+-- The loadout's stratagems as {offer id = true}, plus the entries as a string (to notice picks).
+local function loadout_offers(screen, index)
+    local block = screen + SCREEN.blocks + index * SCREEN.block_size
+    if not read_into(buffers.block, block + BLOCK.entries, BLOCK.count - BLOCK.entries + 4) then return nil end
+    local count = buf_u32(buffers.block, BLOCK.count - BLOCK.entries)
+    if count > BLOCK_MAX then return nil end
+    visit.offers = visit.offers or offer_map()
+    local equipped = {}
+    for e = 0, count - 1 do
+        local offer = visit.offers[item_id(buf_u32(buffers.block, e * ENTRY_SIZE))]
+        if offer then equipped[offer] = true end
+    end
+    return equipped, ffi.string(buffers.block, count * ENTRY_SIZE)
 end
+
+local function service_list(screen, index)
+    local list = screen + SCREEN.list
+    local list_buf = buffers.list
+    if not read_into(list_buf, list + LIST.span, LIST.span_size) then return end
+    local n = buf_u32(list_buf, LIST.count)
+    if n == 0 or n > LIST_MAX then restore_vehicles(); return end
+    lift_vehicles()
+    -- Refused items: none in steady state (the loadout's are marked back); after a pick the refresh refuses the
+    -- loadout's again. The same refused set as last time (refused for other reasons) is left alone without reading
+    -- more.
+    local refused = nil
+    for i = 0, n - 1 do
+        if list_buf[LIST.selectable + i] == 0 then
+            refused = refused or {}
+            refused[#refused + 1] = i
+        end
+    end
+    if not refused then visit.refused = nil; return end
+    local key = table.concat(refused, ',')
+    if key == visit.refused then return end
+    local equipped, block = loadout_offers(screen, index)
+    if not equipped then return end
+    if visit.block and block ~= visit.block then
+        -- A pick: a selection left on a loadout stratagem would silence the next pick of it.
+        local selected = buf_u32(list_buf, LIST.selected)
+        if selected ~= 0 and equipped[selected] then native.select(list, 0) end
+    end
+    visit.block = block
+    local kept = {}
+    for _, i in ipairs(refused) do
+        local offer = buf_u32(list_buf, LIST.ids + i * 4)
+        if equipped[offer] then
+            native.mark(list, offer, 1)
+        else
+            kept[#kept + 1] = i
+        end
+    end
+    visit.refused = #kept > 0 and table.concat(kept, ',') or nil
+end
+-- END PLUS
 
 ---------------------------------------------------------------------------------------
 -- Ready with empty slots
@@ -882,9 +968,10 @@ end
 local state = {ready = false, screen = nil}
 
 local function leave_screen()
-    restore_vehicles()
+    restore_vehicles()  -- PLUS
     state.screen = nil
     visit.offers = nil
+    visit.block, visit.refused = nil, nil  -- PLUS
     ready.flash, ready.idle, advance.slot = nil, nil, nil
 end
 
@@ -913,8 +1000,8 @@ local function step()
         if EXTRA.advance then service_advance(screen, index, list_open, category) end
         if clear then clear_loadout(screen, index, list_open) end
     end
-    if category ~= STRATAGEMS or index > 3 then restore_vehicles(); return end
-    service_list(screen)
+    if category ~= STRATAGEMS or index > 3 then restore_vehicles(); return end  -- PLUS
+    service_list(screen, index)  -- PLUS
 end
 
 local where_found = ''
@@ -931,7 +1018,9 @@ local function report()
                      'List scroll kept: ' .. (EXTRA.scroll and 'on' or ('NOT AVAILABLE (' .. tostring(EXTRA.scroll_why) .. ')')),
                      'Clear Stratagems key: '
                      .. (EXTRA.clear and 'on' or ('NOT AVAILABLE (' .. tostring(EXTRA.clear_why) .. ')'))}
-    write_status('OK - more than one vehicle of a kind can be picked in the Hellpod loadout', details)
+    local verdict = 'OK - active in the Hellpod loadout (its features are listed below)'
+    verdict = 'OK - the same stratagem can be picked more than once in the Hellpod loadout'  -- PLUS
+    write_status(verdict, details)
 end
 
 local function unavailable(reason)
@@ -943,8 +1032,20 @@ end
 -- With the code located: the layout, the native functions, then ready.
 local function finish_start()
     local good, reason = read_layout()
+    -- BEGIN PLUS
+    if good then
+        for name, sig in pairs({mark = 'marker', select = 'select'}) do
+            local ctype = name == 'mark' and 'void (*)(uint64_t, uint32_t, uint8_t)'  -- (list, offer, selectable)
+                          or 'uint8_t (*)(uint64_t, uint32_t)'                         -- (list, offer or 0)
+            local cast_ok, fn = pcall(ffi.cast, ctype, code:address(sig))
+            if not cast_ok then good, reason = false, 'native function ' .. name .. ' unavailable' end
+            native[name] = fn
+        end
+    end
+    -- END PLUS
     if not good then return unavailable(reason) end
     read_extras()
+    -- STANDARD: if not (EXTRA.ready or EXTRA.advance or EXTRA.clear) then return unavailable(tostring(EXTRA.ready_why)) end
     if not EXTRA.ready then note('Ready with empty slots not available: ' .. tostring(EXTRA.ready_why)) end
     if EXTRA.ready and not EXTRA.press then note('Ready press check not available: ' .. tostring(EXTRA.press_why)) end
     if EXTRA.ready and not EXTRA.emote then note('Ready pose not available: ' .. tostring(EXTRA.emote_why)) end
@@ -996,7 +1097,7 @@ update = function(dt, ...)
         if not ok then
             M.errors = M.errors + 1
             note('Error: ' .. tostring(err))
-            pcall(restore_vehicles)
+            pcall(restore_vehicles)  -- PLUS
             if M.errors >= 5 then
                 M.retired = true
                 write_status('STOPPED - repeated errors; the loadout works as normal (see FlexibleStratagems.log)')
@@ -1006,6 +1107,6 @@ update = function(dt, ...)
     if type(original_update) == 'function' then return original_update(dt, ...) end
 end
 
-note('Flexible Stratagems ' .. M.version .. ' loaded')
+note(TITLE .. ' loaded')
 M._test = {state = state, visit = visit, code = function() return code end, layout = L, extra = EXTRA}
 return M

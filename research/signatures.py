@@ -15,6 +15,9 @@ import sigspec  # noqa: E402
 
 SCRIPT = MOD / 'flexible_stratagems.lua'
 
+# Signatures of one edition only: {name: 'PLUS'}.
+ONLY = {}
+
 SPECS = [
     # A loadout screen query: mov rax,[screen stack]; mov rcx,[rax+slot]; cmp dword [rcx+local index],-1; setne al.
     {'name': 'screen', 'start': 0x1082ef0, 'end': 0x1082f09,
@@ -39,12 +42,19 @@ SPECS = [
     # The equip handler checking the offers table count.
     {'name': 'offers_count', 'start': 0x146e1cf, 'end': 0x146e1ef,
      'fields': {'offers': (0x347cef8, 'rip'), 'offers_count': (0x1ce0, 'u32'), 'entries': (0xb9ce4, 'u32')}},
+    # Plus edition only ('only': left out of the standard edition's script).
+    # The marker (list, offer, selectable): looks the offer up among the list's offer ids.
+    {'name': 'marker', 'start': 0x18d1440, 'end': 0x18d1488, 'only': 'PLUS',
+     'fields': {'ids': (0x92990, 'u32')}},
+    # Select (list, offer): stores the selected offer.
+    {'name': 'select', 'start': 0x18d10d0, 'end': 0x18d10fb, 'only': 'PLUS',
+     'fields': {'selected': (0x9298c, 'u32')}},
     # The equip handler's one-per-kind rule: the stratagem table's size, and the three kind bits of info +0x104.
-    {'name': 'kind_frv', 'start': 0x146e2e0, 'end': 0x146e317,
+    {'name': 'kind_frv', 'start': 0x146e2e0, 'end': 0x146e317, 'only': 'PLUS',
      'fields': {'types': (0x96, 'u32'), 'flags': (0x104, 'u32')}},
-    {'name': 'kind_mech', 'start': 0x146e404, 'end': 0x146e41f,
+    {'name': 'kind_mech', 'start': 0x146e404, 'end': 0x146e41f, 'only': 'PLUS',
      'fields': {'flags': (0x104, 'u32')}},
-    {'name': 'kind_tank', 'start': 0x146e4f5, 'end': 0x146e50b,
+    {'name': 'kind_tank', 'start': 0x146e4f5, 'end': 0x146e50b, 'only': 'PLUS',
      'fields': {'flags': (0x104, 'u32')}},
 
     # Ready with fewer than 4 stratagems (optional: without these that feature is off). The screen calls the local
@@ -89,14 +99,16 @@ SPECS = [
     # Keep the list open after a replacement (optional). After a pick the equip handler looks for the first enabled,
     # empty slot (types at screen + 0x6373c; not in grid mode 1, +0x6f290); with one it focuses it in the panel's grid (+0x595f0) and edits it
     # (+0x281c), else it plays a sound and closes the list.
-    # The pick itself ends with the slots written to the loadout block (0x189d120(panel, -1)); after the slot search,
-    # the list refresh, the grid refresh and the save of the block (screen + 0x10 + index * 0x9f0).
+    # The pick itself ends with the slots written to the loadout block (0x189d120(panel, -1)); after the slot search
+    # (a slot's type - 1 is at most 0x94: the stratagem table's last type but one), the list refresh, the grid refresh
+    # and the save of the block (screen + 0x10 + index * 0x9f0).
     {'name': 'equip_tail', 'start': 0x146e5f6, 'end': 0x146e6da, 'optional': True,
      'fields': {'panels': (0x53a78, 'u32'), 'slots_changed': (0x189d120, 'call'), 'refresh': (0x18d1890, 'call'),
                 'list_grid': (0xd2850, 'u32'), 'grid_refresh': (0x18d7210, 'call'), 'block_stride': (0x9f0, 'u32'),
                 'block_base': (0x10, 'u8'), 'save': (0x1751350, 'call'), 'grid_mode': (0x6f290, 'u32'), 'slot_types': (0x6373c, 'u32'), 'slot_stride': (0x12a8, 'u32'), 'ui_sound': (0x1327f50, 'call'),
                 'close_list': (0x146f3b0, 'call'), 'local_index': (0x27d0, 'u32'), 'list': (0xd2f20, 'u32'),
-                'grid': (0x595f0, 'u32'), 'focus_call': (0x1895770, 'call'), 'edit_slot': (0x281c, 'u32')}},
+                'grid': (0x595f0, 'u32'), 'focus_call': (0x1895770, 'call'), 'edit_slot': (0x281c, 'u32'),
+                'type_last': (0x94, 'u32')}},
     # The list opener (the game's own, for the focused slot): its start, which sets list_open.
     {'name': 'open_list', 'start': 0x146e9d0, 'end': 0x146ea64, 'optional': True,
      'fields': {'panels': (0x53a78, 'u32'), 'list_open': (0x273990, 'u32')}},
@@ -118,15 +130,18 @@ SPECS = [
 ]
 
 
+ONLY.update({s['name']: s['only'] for s in SPECS if s.get('only')})
+
+
 def main():
     rows = sigspec.build(SPECS)
     sigspec.report(rows)
     if '--check' in sys.argv:
-        problems = sigspec.check(SCRIPT, rows)
+        problems = sigspec.check(SCRIPT, rows, ONLY)
         for p in problems:
             print('STALE:', p)
         sys.exit(1 if problems else 0)
-    sigspec.write(SCRIPT, rows)
+    sigspec.write(SCRIPT, rows, ONLY)
     print('written to', SCRIPT.name)
 
 

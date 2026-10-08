@@ -1,9 +1,11 @@
 """Publishes a GitHub release for every new ZIP in releases/ (run by .github/workflows/release.yml).
 
 releases/Impatient-Diver-5.zip -> tag v5, release "Impatient Diver V5" (the name is mod.json's displayName), with
-the "## V5" section of CHANGELOG.md as its notes and the ZIP attached. A version whose tag already exists is skipped,
-so pushing the folder again is harmless. Only whole-number versions are released: internal builds (5-recon-1,
-4-fix-2) never are, even if one lands in the folder by mistake.
+the "## V5" section of CHANGELOG.md as its notes and the ZIP attached. A mod with an `edition` in mod.json (say
+"Plus") has two ZIPs per version, <Name>-5-Plus.zip and <Name>-5.zip: both are attached to the one release, the
+edition's first. A version whose tag already exists is skipped, so pushing the folder again is harmless. Only
+whole-number versions are released: internal builds (5-recon-1, 4-fix-2) never are, even if one lands in the folder by
+mistake.
 
 Standard library plus the GitHub CLI (preinstalled on GitHub's runners; GH_TOKEN comes from the workflow).
 """
@@ -31,14 +33,19 @@ def tag_exists(tag):
 
 
 def main():
-    name = json.loads((ROOT / 'mod.json').read_text(encoding='utf-8-sig'))['displayName']
-    zips = sorted((ROOT / 'releases').glob('*.zip'), key=lambda p: p.stat().st_mtime)
-    for path in zips:
-        match = re.search(r'-(\d+)\.zip$', path.name)
+    cfg = json.loads((ROOT / 'mod.json').read_text(encoding='utf-8-sig'))
+    name, edition = cfg['displayName'], cfg.get('edition')
+    suffix = '(-%s)?' % re.escape(edition) if edition else '()'
+    versions = {}  # version -> its ZIPs, the edition's first
+    for path in sorted((ROOT / 'releases').glob('*.zip')):
+        match = re.search(r'-(\d+)%s\.zip$' % suffix, path.name)
         if not match:
             print(f'skipped {path.name}: not a release version (internal builds are never released)')
             continue
-        version = match.group(1)
+        versions.setdefault(int(match.group(1)), []).append(path)
+    for number, paths in sorted(versions.items()):
+        paths.sort(key=lambda p: len(p.name), reverse=True)
+        version = str(number)
         tag = 'v' + version
         if tag_exists(tag):
             print(f'{tag} already released')
@@ -46,9 +53,9 @@ def main():
         with tempfile.NamedTemporaryFile('w', suffix='.md', delete=False, encoding='utf-8') as f:
             f.write(notes_for(version))
         title = f'{name} V{version}'
-        subprocess.run(['gh', 'release', 'create', tag, str(path), '--title', title, '--notes-file', f.name],
+        subprocess.run(['gh', 'release', 'create', tag, *map(str, paths), '--title', title, '--notes-file', f.name],
                        check=True)
-        print(f'released {title}')
+        print(f'released {title}: ' + ', '.join(p.name for p in paths))
 
 
 if __name__ == '__main__':

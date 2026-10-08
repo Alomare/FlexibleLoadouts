@@ -1,8 +1,12 @@
 """Offline test of the Flexible Stratagems release under LuaJIT, with the real game.dll dump as process memory.
 
+Both editions are tested, each as its assembled entry (tools/entry.py): Plus (everything) and the standard one
+(without duplicate stratagems and the vehicle rule), which must carry none of the Plus parts.
+
 The dump (_research/game_25480438.dll, offsets == RVAs) is mapped at a fake base, so the code signatures are
 matched against the game's own code; the globals they lead to (screen stack, loadout screen, stratagem list, offers
-table, stratagem table, ready panel) and the native functions the extras call are simulated. "Other builds"
+table, stratagem table) and the two native functions (the list's marker and select) are simulated, and so is Mod
+Options Menu where a test sets the copy limit. "Other builds"
 are made by moving signatures' code elsewhere in the image (rip-relative and call operands fixed up), changing a
 structure offset inside moved code, or breaking code.
 
@@ -26,7 +30,10 @@ import signatures  # noqa: E402
 import sigspec  # noqa: E402
 from entry import entry_text  # noqa: E402
 
-SOURCE = entry_text(MOD, 'flexible_stratagems.lua')  # what ships: the texts ahead of the script
+# What ships: the texts ahead of the script, per edition. SOURCE is the edition under test.
+SOURCES = {'Plus': entry_text(MOD, 'flexible_stratagems.lua', 'Plus'),
+           'standard': entry_text(MOD, 'flexible_stratagems.lua', 'Plus', standard=True)}
+SOURCE = SOURCES['Plus']
 
 HARNESS = r'''
 local logdir, image = ...
@@ -192,7 +199,23 @@ function fake.list_selectable()
 end
 -- The category is 10 (stratagems) only while the list is open (the opener sets it, the closer clears it).
 function fake.set_category(c) write_mem(SCREEN + 0x2818, le32(c)); write_mem(SCREEN + 0x273990, string.char(c == 10 and 1 or 0)) end
-fake.list_count = LIST + 0x92984
+-- The game's marker (0x18d1440): sets the offer's selectable byte to the flag.
+-- The game's select (0x18d10d0): sets the list's selected offer.
+fake.natives[0x18d10d0] = function(list, offer)
+    fake.selects = (fake.selects or 0) + 1
+    write_mem(list + 0x9298c, le32(offer))
+    return 1
+end
+function fake.set_selected(offer) write_mem(LIST + 0x9298c, le32(offer)) end
+function fake.selected() local v = ffi.new('uint32_t[1]'); ffi.copy(v, read_mem(LIST + 0x9298c, 4), 4); return tonumber(v[0]) end
+fake.natives[0x18d1440] = function(list, offer, flag)
+    fake.marked = (fake.marked or 0) + 1
+    local n = ffi.new('uint32_t[1]'); ffi.copy(n, read_mem(list + 0x92984, 4), 4)
+    for i = 0, tonumber(n[0]) - 1 do
+        local v = ffi.new('uint32_t[1]'); ffi.copy(v, read_mem(list + 0x92990 + i * 4, 4), 4)
+        if tonumber(v[0]) == offer then write_mem(list + 0x92dc2 + i, string.char(flag)) end
+    end
+end
 function fake.set_flags(t, v) write_mem(INFO + t * 0x200 + 0x104, le32(v)) end
 function fake.flags(t)
     local v = ffi.new('uint32_t[1]'); ffi.copy(v, read_mem(INFO + t * 0x200 + 0x104, 4), 4); return tonumber(v[0])
@@ -339,34 +362,56 @@ def reads_per_frame(f, frames):
     return ((f.reads or 0) - before) / frames
 
 
-def main():
-    for pattern in (r'//', r'\bgoto\b', r'&(?!&)', r'~(?!=)', r'<<', r'>>', r'math\.type', r'string\.pack'):
-        check(not re.search(pattern, MAIN.split('\n', 1)[1].replace('-->', '')), f'no Lua 5.3+ construct {pattern!r}')
-    check(SOURCE.startswith('-- HD2-Addon: mods/alomare/flexible_stratagems\n'), 'declaration line first')
-    version = re.search(r"local M = \{version = '([^']+)'", MAIN).group(1)
-    check(not re.search(r'f10|snapshot|save_raw|recon|DuplicateStratagems|StratagemsUnleashed',
-                        MAIN.replace(version, ''), re.I), 'no research leftovers or old names')
-    image = DUMP.read_bytes()
-    for name, rva, text_, fields, _optional in sigspec.build(signatures.SPECS):
-        SIG_ROWS[name] = (rva, text_, fields)
-    in_script = re.findall(r"name = '(\w+)', rva = (0x[0-9a-f]+),(?: optional = true,)? text = '([^']+)'", MAIN)
-    check([(n, int(r, 16), t) for n, r, t in in_script] == [(n, v[0], v[1]) for n, v in SIG_ROWS.items()],
-          'the script carries the signatures research/signatures.py builds (%d)' % len(in_script))
-    check(not sigspec.check(MOD / 'flexible_stratagems.lua', sigspec.build(signatures.SPECS)),
-          'the script carries the current signature engine (tools/sigscan.lua)')
+def build(*edits):
+    """A prepare function for new_game: the image with these (rva, bytes) edits."""
+    def prepare(lua):
+        f = lua.globals().fake
+        for rva, data in edits:
+            f.patch(rva, data)
+    return prepare
 
-    # 1. This build: OK, no Mod Options Menu option; idle outside the loadout screen.
+
+def static(edition, version):
+    main_script = SOURCE[SOURCE.index('\nif rawget(_G,'):]
+    for pattern in (r'//', r'\bgoto\b', r'&(?!&)', r'~(?!=)', r'<<', r'>>', r'math\.type', r'string\.pack'):
+        check(not re.search(pattern, main_script.replace('-->', '')), f'no Lua 5.3+ construct {pattern!r}')
+    check(SOURCE.startswith('-- HD2-Addon: mods/alomare/flexible_stratagems\n'), 'declaration line first')
+    check(not re.search(r'f10|snapshot|save_raw|recon|DuplicateStratagems|StratagemsUnleashed',
+                        main_script.replace(version, ''), re.I), 'no research leftovers or old names')
+    in_script = re.findall(r"name = '(\w+)', rva = (0x[0-9a-f]+),(?: optional = true,)? text = '([^']+)'", main_script)
+    wanted = [(n, v[0], v[1]) for n, v in SIG_ROWS.items() if edition == 'Plus' or n not in signatures.ONLY]
+    check([(n, int(r, 16), t) for n, r, t in in_script] == wanted,
+          'the entry carries the signatures research/signatures.py builds for this edition (%d)' % len(in_script))
+    check('-- STANDARD' not in SOURCE, 'no STANDARD marker lines left')
+    if edition == 'Plus':
+        check(not sigspec.check(MOD / 'flexible_stratagems.lua', sigspec.build(signatures.SPECS), signatures.ONLY),
+              'the script carries the current signature block and engine (tools/sigscan.lua)')
+        check("M.edition, TITLE = 'Plus'" in SOURCE and 'native.mark(list, offer, 1)' in SOURCE
+              and 'local function lift_vehicles()' in SOURCE, 'the Plus parts are in')
+        return
+    # The standard edition: nothing of the Plus parts, in code or comments.
+    leftovers = sorted(set(re.findall(r"PLUS|Plus|[Cc]opies|[Vv]ehicle|kind_(?:frv|mech|tank)|marker|native\.\w*select"
+                                      r"|'select'|LIST\.|equipped|more than once", main_script)))
+    check(not leftovers, 'no Plus parts in the script: %r' % leftovers)
+    check('if not (EXTRA.ready or EXTRA.advance or EXTRA.clear) then return unavailable(' in main_script,
+          'the STANDARD line is code')
+
+
+def core_plus(image, version):
+
+    # 1. This build: OK, nothing asked of Mod Options Menu; idle outside the loadout screen.
     lua, logs = new_game(image, 'fake.install_menu()')
     f = lua.globals().fake
     f.frame_step(1)
     status = text(logs / 'FlexibleStratagems_STATUS.log')
-    check(status.startswith('OK - more than one vehicle of a kind can be picked') and 'Flexible Stratagems %s' % version in status
-          and "Game code found at this game version's addresses" in status and 'opies' not in status
-          and 'ooldown' not in status, 'status OK on this build: %r' % status.splitlines()[:3])
+    check(status.startswith('OK - the same stratagem can be picked more than once')
+          and 'Flexible Stratagems %s Plus\n' % version in status
+          and "Game code found at this game version's addresses" in status and 'opies' not in status,
+          'status OK on this build: %r' % status.splitlines()[:3])
     check(f.base_updates == 1, 'update chained')
     rate = reads_per_frame(f, 120)
     check(rate <= 1 and not f.game_writes, 'outside the loadout screen: %.2f reads per frame, no writes' % rate)
-    check(f.registered is None, 'no Mod Options Menu option registered')
+    check(f.registered is None and lua.eval('FlexibleStratagems.edition') == 'Plus', 'no Mod Options Menu option registered')
 
     # 2. Loadout screen, another category: a few reads per frame, nothing written.
     lua, logs = new_game(image)
@@ -392,21 +437,38 @@ def main():
           'list open: only the vehicle bits cleared: %x %x %x' % (f.flags(12), f.flags(9), f.flags(20)))
     writes = f.game_writes
     rate = reads_per_frame(f, 20)
-    # List open: the screen (3), the list-open byte, the list count, the loadout block and the scroll.
-    check(rate <= 7 and f.game_writes == writes, 'list open: %.1f reads per frame, no writes' % rate)
+    # List open: the screen (3), the list-open byte, the list span, the loadout block and the scroll.
+    check(rate <= 7 and f.game_writes == writes, 'list open, nothing refused: %.1f reads per frame, no writes' % rate)
 
-    # 4. The game's refresh refuses the loadout's stratagems: they stay refused (no second copy), before and after a
-    #    pick, and no game function is called.
+    # 4. The game's refresh refuses the loadout's stratagems (and one item for another reason): the loadout's are
+    #    marked back through the game's marker, the other stays refused and costs nothing more afterwards.
+    f.set_selected(0xb009)  # a controller's focus on a loadout stratagem, no pick
     f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(0, 0, 0, 1, 0, 0))
-    f.frame_step(5)
-    check(f.list_selectable() == '0,0,0,1,0,0', 'loadout stratagems stay refused: %s' % f.list_selectable())
-    f.set_block(0, lua.table(5, 20, 12, 3))
-    f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(0, 1, 0, 0, 0, 0))
-    f.frame_step(5)
-    check(f.list_selectable() == '0,1,0,0,0,0' and f.game_writes == writes and not len(f.calls),
-          'after a pick: the new loadout stays refused, nothing written or called: %s' % f.list_selectable())
+    f.frame_step(1)
+    check(f.list_selectable() == '1,1,1,1,1,0' and f.marked == 4, 'loadout stratagems marked selectable: %s' % f.list_selectable())
+    rate = reads_per_frame(f, 20)
+    check(rate <= 7 and f.marked == 4, 'an unrelated refused item: %.1f reads per frame, not marked again' % rate)
+    check(not f.selects and f.selected() == 0xb009, 'no pick yet: the selection (focus) is left alone')
 
-    # 5. The list closes, then the category changes, then the screen closes: the vehicle bits come back each time.
+    # 5. A pick (Railcannon again): the refresh refuses the loadout's stratagems again; the selection left on the
+    #    Railcannon is cleared once, so its next pick plays the sound. Two Railcannons stay pickable.
+    f.set_selected(0xb005)
+    f.set_block(0, lua.table(5, 5, 12, 3))
+    f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(0, 1, 0, 1, 0, 0))
+    f.frame_step(1)
+    check(f.selects == 1 and f.selected() == 0 and f.list_selectable() == '1,1,1,1,1,0',
+          'after a pick: selection cleared, loadout marked again (two copies still selectable)')
+    f.set_selected(0xb005)
+    f.frame_step(5)
+    check(f.selects == 1 and f.selected() == 0xb005, 'the selection is cleared once per pick (controller focus kept)')
+    f.set_selected(0xb04d)
+    f.set_block(0, lua.table(5, 5, 12, 20))
+    f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(0, 1, 0, 0, 1, 0))
+    f.frame_step(1)
+    check(f.selects == 1 and f.selected() == 0xb04d, 'a selection outside the loadout is left alone')
+    check(all(c in ('0x18d1440', '0x18d10d0') for c in f.calls.values()), 'only the marker and select are called')
+
+    # 6. The list closes, then the category changes, then the screen closes: the vehicle bits come back each time.
     f.set_list(lua.table(), lua.table())
     f.frame_step(1)
     check(f.flags(12) == 0x00200021 and f.flags(9) == 0x80100000, 'list closed: vehicle bits restored')
@@ -431,8 +493,33 @@ def main():
     f.frame_step(10)
     check(f.flags(12) == 0x00400001, 'and restored')
 
-    # 6. Errors: the vehicle bits are restored; five errors stop the mod.
+    # 7. No limit on copies, vehicles included: a stratagem stays pickable whatever number of it the loadout holds, up
+    #    to all four slots.
     lua, logs = new_game(image)
+    f = lua.globals().fake
+    f.frame_step(1)
+    f.set_flags(12, 0x00200021)
+    f.set_block(0, lua.table(5, 5, 12, 12))
+    f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(0, 1, 0, 1, 1, 0))
+    f.set_category(10)
+    f.open_screen(0)
+    f.frame_step(10)
+    check(f.list_selectable() == '1,1,1,1,1,0' and f.flags(12) == 0x21,
+          'two Railcannons and two of a vehicle: both stay pickable, vehicle bits lifted: %s' % f.list_selectable())
+    f.set_block(0, lua.table(5, 5, 5, 12))
+    f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(0, 1, 0, 1, 1, 0))
+    f.frame_step(2)
+    check(f.list_selectable() == '1,1,1,1,1,0', 'three Railcannons: still pickable: %s' % f.list_selectable())
+    f.set_block(0, lua.table(12, 12, 12, 12))
+    f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(1, 1, 0, 1, 1, 0))
+    f.frame_step(2)
+    check(f.list_selectable() == '1,1,1,1,1,0', 'four of a vehicle: still pickable: %s' % f.list_selectable())
+    marked = f.marked
+    f.frame_step(20)
+    check(f.marked == marked, 'an item refused for another reason: nothing marked again every frame')
+
+    # 12. Errors: the vehicle bits are restored; five errors stop the mod.
+    lua, logs = new_game(image, "fake.natives[0x18d1440] = function() error('boom') end")
     f = lua.globals().fake
     f.frame_step(1)
     f.set_flags(12, 0x00200021)
@@ -440,9 +527,6 @@ def main():
     f.set_list(lua.table(5, 9), lua.table(0, 0))
     f.set_category(10)
     f.open_screen(0)
-    f.frame_step(10)
-    check(f.flags(12) == 0x21, 'list open: vehicle bits cleared')
-    f.fail_at = f.list_count
     f.frame_step(20)
     status = text(logs / 'FlexibleStratagems_STATUS.log')
     check(f.flags(12) == 0x00200021 and status.startswith('STOPPED - repeated errors') and 'boom' in text(logs / 'FlexibleStratagems.log'),
@@ -451,19 +535,26 @@ def main():
     f.frame_step(3)
     check(f.base_updates == before + 3, 'update still chained after stopping')
 
-    # 7. Another build where code moved: the screen query and a kind rule are elsewhere, and the screen slot is +0xb8
-    #    instead of +0xb0. The mod finds them by search and follows the new slot.
-    # kind_mech starts 16 bytes into the second search chunk: inside the first chunk's overlap too, counted once.
-    new = {'screen': FREE + 0x200, 'kind_mech': 0x1000 + 0x400000 + 0x10}
+    # 13. Another build where code moved: the marker, select and the screen query are elsewhere (the refresh calls the
+    #     moved marker), and the screen slot is +0xb8 instead of +0xb0. The mod finds them by search, follows the new
+    #     slot, and calls the natives at their new addresses.
+    # select starts 16 bytes into the second search chunk: inside the first chunk's overlap too, counted once.
+    new = {'marker': FREE, 'select': 0x1000 + 0x400000 + 0x10, 'screen': FREE + 0x200}
 
     def moved_build(lua):
         f = lua.globals().fake
         for name in new:
             rva, garbage = broken(name)
             f.patch(rva, garbage)
-        f.patch(new['kind_mech'], moved(image, 'kind_mech', new['kind_mech']))
+        f.patch(new['marker'], moved(image, 'marker', new['marker']))
+        f.patch(new['select'], moved(image, 'select', new['select']))
         f.patch(new['screen'], moved(image, 'screen', new['screen'], {'slot': 0xb8}))
-        lua.execute("fake.heap(STACK, string.rep('\\0', 0xb8) .. fake.le64(SCREEN) .. string.rep('\\0', 0x400 - 0xc0))")
+        rb = SIG_ROWS['refresh_b'][0]
+        f.patch(rb, moved(image, 'refresh_b', rb, call_targets={'mark': new['marker']}))
+        lua.execute("""fake.natives[%d] = fake.natives[0x18d1440]; fake.natives[%d] = fake.natives[0x18d10d0]
+            fake.natives[0x18d1440], fake.natives[0x18d10d0] = nil, nil
+            fake.heap(STACK, string.rep('\\0', 0xb8) .. fake.le64(SCREEN) .. string.rep('\\0', 0x400 - 0xc0))"""
+                    % (new['marker'], new['select']))
     lua, logs = new_game(image, moved_build)
     f = lua.globals().fake
     started = time.perf_counter()
@@ -474,39 +565,37 @@ def main():
     elapsed = time.perf_counter() - started
     status = text(logs / 'FlexibleStratagems_STATUS.log')
     print('INFO search of game.dll: %d frames, %.2f s in this LuaJIT (%.0f ms per frame)' % (frames, elapsed, elapsed * 1000 / frames))
-    check(status.startswith('OK - more than one vehicle') and 'Game code found by search (2 moved: screen, kind_mech)' in status,
+    check(status.startswith('OK - the same stratagem') and 'Game code found by search (3 moved: screen, marker, select)' in status,
           'moved code found by search: %r' % status.splitlines()[-1:])
     f.set_flags(12, 0x00200021)
-    f.set_block(0, lua.table(5, 12))
+    f.set_block(0, lua.table(5, 5, 12))
     f.set_list(lua.table(5, 12, 20), lua.table(0, 0, 1))
+    f.set_selected(0xb005)
     f.set_category(10)
     f.open_screen(0)
     f.frame_step(10)
-    check(f.flags(12) == 0x21 and f.list_selectable() == '0,0,1',
-          'the loadout is served through the moved screen slot: %x %s' % (f.flags(12), f.list_selectable()))
+    f.set_block(0, lua.table(5, 5, 5))
+    f.set_list(lua.table(5, 12, 20), lua.table(0, 1, 1))
+    f.frame_step(2)
+    calls = set(f.calls.values())
+    check(f.list_selectable() == '1,1,1' and f.flags(12) == 0x21 and calls == {hex(new['marker']), hex(new['select'])},
+          'the loadout is served through the moved screen slot, marker and select: %s %s' % (f.list_selectable(), sorted(calls)))
 
-    # 8. Builds the mod can't trust: nothing runs, the status says why.
-    def build(*edits):
-        def prepare(lua):
-            f = lua.globals().fake
-            for rva, data in edits:
-                f.patch(rva, data)
-        return prepare
+    # 14. Builds the mod can't trust: nothing runs, the status says why.
     kind_mech = SIG_ROWS['kind_mech']
     flags_at = kind_mech[0] + kind_mech[2]['flags'][1][0]
     cases = (
-        (build(broken('kind_tank')), 'code "kind_tank" not found'),
-        (build(broken('kind_mech'), (FREE, moved(image, 'kind_mech', FREE)), (FREE + 0x100, moved(image, 'kind_mech', FREE + 0x100))),
-         'code "kind_mech" found 2 times'),
+        (build(broken('marker')), 'code "marker" not found'),
+        (build(broken('select'), (FREE, moved(image, 'select', FREE)), (FREE + 0x100, moved(image, 'select', FREE + 0x100))),
+         'code "select" found 2 times'),
         (build((flags_at, (0x108).to_bytes(4, 'little'))), '"flags" differs between signatures'),
-        (build(broken('refresh_a'), (FREE, moved(image, 'refresh_a', FREE))), 'refresh_a outside the refresh'),
+        (build(broken('marker'), (FREE, moved(image, 'marker', FREE))), 'the refresh does not call the marker'),
         (build((SIG_ROWS['refresh_a'][0] + SIG_ROWS['refresh_a'][2]['list_count'][1][1], (0x92988).to_bytes(4, 'little'))),
          'code "refresh_a" field "list_count" occurrences disagree'),
     )
     for prepare, why in cases:
         lua, logs = new_game(image, prepare)
         f = lua.globals().fake
-        f.set_flags(12, 0x00200021)
         f.set_block(0, lua.table(5, 9))
         f.set_list(lua.table(5, 9), lua.table(0, 0))
         f.set_category(10)
@@ -514,11 +603,13 @@ def main():
         f.frame_step(40)
         status = text(logs / 'FlexibleStratagems_STATUS.log')
         check(status.startswith('NOT AVAILABLE - this game version is not supported (%s)' % why) and not f.game_writes
-              and not len(f.calls) and f.flags(12) == 0x00200021, 'another build (%s): nothing written or called: %r'
+              and not len(f.calls) and f.list_selectable() == '0,0', 'another build (%s): nothing written or called: %r'
               % (why, status.splitlines()[:1]))
 
 
-    # 9. Ready with empty slots: a flash starting on the local panel's slots (the handler's refusal) toggles the ready
+def extras(image, verdict):
+    """The features both editions have. verdict: how the edition's OK status starts."""
+    # 15. Ready with empty slots: a flash starting on the local panel's slots (the handler's refusal) toggles the ready
     #     the handler's way; a flash still showing, or one while the list is open, does nothing.
     lua, logs = new_game(image)
     f = lua.globals().fake
@@ -561,7 +652,7 @@ def main():
     check('Ready with empty slots: on' in status and 'Ready press during a flash: on' in status
           and 'List kept open after a replacement: on' in status, 'status: the list extras on: %r' % status.splitlines()[-4:])
 
-    # 9b. A Ready press while a flash still shows (the handler refused without flashing again): told by the game's
+    # 15b. A Ready press while a flash still shows (the handler refused without flashing again): told by the game's
     #      press check, it toggles too, so readying and cancelling don't wait for the flash to end.
     lua.execute("fake.write(%d, '\\1')" % (0x21000000 + 0x53a78 + 0x1ee0c))  # the local panel again
     f.set_flash(3, 0); f.set_timer(0xbf800000); f.frame_step(2)
@@ -594,7 +685,7 @@ def main():
     f.ready_pressed = True; f.frame_step(1); f.ready_pressed = False
     check(f.timer() == 0x3fe00000 and len(poses()) == k, 'no unit (-1): readying, no pose sent')
 
-    # 10. A replacement in a full loadout closes the list: it opens again on the next slot (through the grid's focus
+    # 16. A replacement in a full loadout closes the list: it opens again on the next slot (through the grid's focus
     #     setter and the game's opener). Escape (no change), the last slot, a fill of an empty slot and grid mode 1:
     #     closed as the game leaves it.
     lua, logs = new_game(image)
@@ -632,7 +723,7 @@ def main():
     check(pick(1, (5, 9, 12, 3), (5, 20, 12, 3), close=False) == (None, 0), 'the list still open: nothing')
     check('Replaced slot 2: list opened on slot 3' in text(logs / 'FlexibleStratagems.log'), 'logged')
 
-    # 11. Clear Stratagems: a Mod Bindings Menu key empties the four slots, writes the block from them and saves it;
+    # 17. Clear Stratagems: a Mod Bindings Menu key empties the four slots, writes the block from them and saves it;
     #     with the list open it closes it first; not while ready.
     def clear_game():
         lua, logs = new_game(image, "ModBindingsMenu = {api = 1, version = 3, register_binding = function(id, label, slot, o) "
@@ -666,12 +757,12 @@ def main():
     f.clear_down = True; f.frame_step(1); f.clear_down = False; f.frame_step(12)
     check(f.slot_type(0) == 5 and not f.saved, 'outside the loadout screen: nothing')
 
-    # 12. Without the ready code only that extra is off; the picker and the other extra still work.
+    # 18. Without the ready code only that extra is off; the picker and the other extra still work.
     lua, logs = new_game(image, build(broken('ready_slots')))
     f = lua.globals().fake
     f.frame_step(40)
     status = text(logs / 'FlexibleStratagems_STATUS.log')
-    check(status.startswith('OK - more than one vehicle') and 'Ready with empty slots: NOT AVAILABLE (code "ready_slots" not found)' in status
+    check(status.startswith(verdict) and 'Ready with empty slots: NOT AVAILABLE (code "ready_slots" not found)' in status
           and 'List kept open after a replacement: on' in status,
           'ready code missing: only that extra is off: %r' % status.splitlines()[-2:])
     lua, logs = new_game(image, build(broken('ready_press')))
@@ -709,6 +800,153 @@ def main():
     status = text(logs / 'FlexibleStratagems_STATUS.log')
     check('List kept open after a replacement: NOT AVAILABLE (the equip handler does not focus with the setter found)'
           in status, 'the equip handler calling another focus setter: that extra is off: %r' % status.splitlines()[-1:])
+
+
+def core_standard(image, version):
+    """The standard edition: the game's own rules stay (no second copy, one vehicle of a kind)."""
+    # S1. This build: OK, nothing asked of Mod Options Menu; idle outside the loadout screen.
+    lua, logs = new_game(image, 'fake.install_menu()')
+    f = lua.globals().fake
+    f.frame_step(1)
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check(status.startswith('OK - active in the Hellpod loadout') and 'Flexible Stratagems %s\n' % version in status
+          and "Game code found at this game version's addresses" in status and 'opies' not in status
+          and 'Plus' not in status, 'status OK on this build: %r' % status.splitlines()[:3])
+    check(f.base_updates == 1, 'update chained')
+    rate = reads_per_frame(f, 120)
+    check(rate <= 1 and not f.game_writes, 'outside the loadout screen: %.2f reads per frame, no writes' % rate)
+    f.frame_step(30)
+    check(f.registered is None, 'no Mod Options Menu option registered')
+    check(lua.eval('FlexibleStratagems.edition') is None and lua.eval('FlexibleStratagems._test.settings') is None,
+          'no edition name, no settings')
+
+    # S2. The stratagem list open on a loadout with vehicles: the loadout's stratagems stay refused and the vehicles'
+    #     kind bits stay, before and after a pick; nothing is written and no game function is called.
+    lua, logs = new_game(image)
+    f = lua.globals().fake
+    f.frame_step(1)
+    f.set_flags(12, 0x00200021)
+    f.set_flags(9, 0x80100000)
+    f.set_block(0, lua.table(5, 9, 12, 3))
+    f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(0, 0, 0, 1, 0, 0))
+    f.set_category(10)
+    f.open_screen(0)
+    f.frame_step(10)
+    rate = reads_per_frame(f, 20)
+    # List open: the screen (3), the list-open byte, the loadout block and the scroll.
+    check(rate <= 6 and f.list_selectable() == '0,0,0,1,0,0' and f.flags(12) == 0x00200021 and f.flags(9) == 0x80100000,
+          'list open: %.1f reads per frame, the loadout stays refused, the kind bits stay' % rate)
+    f.set_block(0, lua.table(5, 20, 12, 3))
+    f.set_list(lua.table(5, 9, 12, 20, 3, 77), lua.table(0, 1, 0, 0, 0, 0))
+    f.frame_step(5)
+    f.set_list(lua.table(), lua.table())
+    f.set_category(3)
+    f.frame_step(5)
+    f.close_screen()
+    f.frame_step(12)
+    check(f.list_selectable() == '' and f.flags(12) == 0x00200021 and not f.game_writes and not len(f.calls),
+          'after a pick, the list closed and the screen left: nothing written or called')
+
+    # S3. Errors: five stop the mod.
+    lua, logs = new_game(image)
+    f = lua.globals().fake
+    f.frame_step(1)
+    f.open_screen(0)
+    f.frame_step(10)
+    f.fail_at = 0x21000000 + 0x273990   # the list-open byte
+    f.frame_step(20)
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check(status.startswith('STOPPED - repeated errors') and 'boom' in text(logs / 'FlexibleStratagems.log')
+          and not f.game_writes, 'errors stop the mod after five: %r' % status.splitlines()[:1])
+    before = f.base_updates
+    f.frame_step(3)
+    check(f.base_updates == before + 3, 'update still chained after stopping')
+
+    # S4. Another build where code moved: the screen query is elsewhere and the screen slot is +0xb8 instead of +0xb0.
+    #     The mod finds it by search and follows the new slot (a refused ready there is toggled).
+    def moved_build(lua):
+        f = lua.globals().fake
+        rva, garbage = broken('screen')
+        f.patch(rva, garbage)
+        f.patch(FREE + 0x200, moved(image, 'screen', FREE + 0x200, {'slot': 0xb8}))
+        lua.execute("fake.heap(STACK, string.rep('\\0', 0xb8) .. fake.le64(SCREEN) .. string.rep('\\0', 0x400 - 0xc0))")
+    lua, logs = new_game(image, moved_build)
+    f = lua.globals().fake
+    frames = 0
+    while not text(logs / 'FlexibleStratagems_STATUS.log') and frames < 60:
+        f.frame_step(1)
+        frames += 1
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check(status.startswith('OK - active') and 'Game code found by search (1 moved: screen)' in status,
+          'moved code found by search in %d frames: %r' % (frames, status.splitlines()[2:3]))
+    f.setup_panel(lua.table(lua.table(77, False)))
+    f.set_block(0, lua.table(5, 9))
+    f.open_screen(0)
+    f.frame_step(12)
+    f.set_flash(2, 1)
+    f.frame_step(1)
+    check(f.timer() == 0x3fe00000, 'the loadout is served through the moved screen slot (a refused ready is toggled)')
+
+    # S5. Builds the mod can't trust: nothing runs, the status says why.
+    cases = (
+        (build(broken('offers_count')), 'code "offers_count" not found'),
+        (build(broken('category'), (FREE, moved(image, 'category', FREE)), (FREE + 0x100, moved(image, 'category', FREE + 0x100))),
+         'code "category" found 2 times'),
+        (build(broken('refresh_a'), (FREE, moved(image, 'refresh_a', FREE))), 'refresh_a outside the refresh'),
+        (build((SIG_ROWS['refresh_a'][0] + SIG_ROWS['refresh_a'][2]['list_count'][1][1], (0x92988).to_bytes(4, 'little'))),
+         'code "refresh_a" field "list_count" occurrences disagree'),
+        # None of the features' code: nothing to do.
+        (build(broken('ready_slots'), broken('open_list'), broken('set_slot')), 'code "ready_slots" not found'),
+    )
+    for prepare, why in cases:
+        lua, logs = new_game(image, prepare)
+        f = lua.globals().fake
+        f.setup_panel(lua.table(lua.table(77, False)))
+        f.set_block(0, lua.table(5, 9))
+        f.open_screen(0)
+        f.frame_step(40)
+        f.set_flash(2, 1)
+        f.frame_step(2)
+        status = text(logs / 'FlexibleStratagems_STATUS.log')
+        check(status.startswith('NOT AVAILABLE - this game version is not supported (%s)' % why) and not f.game_writes
+              and not len(f.calls) and f.timer() == 0xbf800000, 'another build (%s): nothing written or called: %r'
+              % (why, status.splitlines()[:1]))
+
+    # S6. The Plus edition's code (the list's marker and select, the one-per-kind rule) is not needed; and without the
+    #     list opener only the list kept open is off.
+    lua, logs = new_game(image, build(*(broken(name) for name in signatures.ONLY)))
+    f = lua.globals().fake
+    f.frame_step(40)
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check(status.startswith('OK - active') and "Game code found at this game version's addresses" in status
+          and 'NOT AVAILABLE' not in status, 'without the Plus edition\'s code: all on: %r' % status.splitlines()[:1])
+    lua, logs = new_game(image, build(broken('open_list')))
+    f = lua.globals().fake
+    f.frame_step(40)
+    status = text(logs / 'FlexibleStratagems_STATUS.log')
+    check(status.startswith('OK - active') and 'Ready with empty slots: on' in status
+          and 'List kept open after a replacement: NOT AVAILABLE (code "open_list" not found)' in status
+          and 'Clear Stratagems key: on' in status, 'the list opener missing: only the list kept open is off')
+    f.setup_panel(lua.table(lua.table(77, False)))
+    f.open_screen(0)
+    f.frame_step(12)
+    f.set_flash(2, 1)
+    f.frame_step(1)
+    check(f.timer() == 0x3fe00000, 'and a refused ready is still toggled')
+
+
+def main():
+    global SOURCE
+    image = DUMP.read_bytes()
+    for name, rva, text_, fields, _optional in sigspec.build(signatures.SPECS):
+        SIG_ROWS[name] = (rva, text_, fields)
+    version = re.search(r"local M = \{version = '([^']+)'", MAIN).group(1)
+    for edition, core, verdict in (('Plus', core_plus, 'OK - the same stratagem'), ('standard', core_standard, 'OK - active')):
+        print('== The %s edition' % edition)
+        SOURCE = SOURCES[edition]
+        static(edition, version)
+        core(image, version)
+        extras(image, verdict)
 
     passed = sum(results)
     print(f'{passed}/{len(results)} passed')

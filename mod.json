@@ -3,11 +3,15 @@
     "guid": "6939fac7-0205-4e09-914b-827ab7913fe0",
     "displayName": "Flexible Stratagems",
     "entry": "flexible_stratagems.lua",
-    "version": "6",
+    "version": "7",
     "icon": "icon.png",
-    "description": "Bring more than one vehicle of a kind in the Hellpod loadout and ready up with fewer than four stratagems.",
+    "edition": "Plus",
+    "description": "Bring the same stratagem more than once in the Hellpod loadout, vehicles included, ready up with fewer than four stratagems, keep the stratagem list open when you replace one, and empty all four slots with one key.",
     "requires": [
         "Bingus Shared Loader v17 or newer",
         "Mod Bindings Menu (optional: the Clear Stratagems key)"
-    ]
+    ],
+    "standard": {
+        "description": "Ready up with fewer than four stratagems in the Hellpod loadout, keep the stratagem list open when you replace one, and empty all four slots with one key."
+    }
 }
