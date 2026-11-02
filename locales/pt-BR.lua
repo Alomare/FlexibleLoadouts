@@ -1,8 +1,9 @@
 return {
-    mod = 'flexible_stratagems',
+    mod = 'flexible_loadouts',
     language = 'pt-BR',
     strings = {
-        ['option.mod'] = 'Flexible Stratagems',
-        ['binding.clear'] = 'Limpar Estratégias',
+        ['option.mod'] = 'Flexible Loadouts',
+        ['binding.action'] = 'Ação',
+        ['button.remove'] = 'Remover',
     },
 }

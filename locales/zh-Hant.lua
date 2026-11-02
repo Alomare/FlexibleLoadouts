@@ -1,8 +1,9 @@
 return {
-    mod = 'flexible_stratagems',
+    mod = 'flexible_loadouts',
     language = 'zh-Hant',
     strings = {
-        ['option.mod'] = 'Flexible Stratagems',
-        ['binding.clear'] = '清空戰略配備',
+        ['option.mod'] = 'Flexible Loadouts',
+        ['binding.action'] = '操作',
+        ['button.remove'] = '移除',
     },
 }

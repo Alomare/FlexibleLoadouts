@@ -1,8 +1,9 @@
 return {
-    mod = 'flexible_stratagems',
+    mod = 'flexible_loadouts',
     language = 'ja',
     strings = {
-        ['option.mod'] = 'Flexible Stratagems',
-        ['binding.clear'] = '戦略支援を空にする',
+        ['option.mod'] = 'Flexible Loadouts',
+        ['binding.action'] = 'アクション',
+        ['button.remove'] = '外す',
     },
 }

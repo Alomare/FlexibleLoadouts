@@ -1,6 +1,16 @@
 # Changelog
 
-Releases are named "Flexible Stratagems V&lt;n&gt;" (tag `v<n>`). Each section is that release's notes. Versions 1 and 2 were released as Stratagems Unleashed.
+Releases are named "Flexible Loadouts V&lt;n&gt;" (tag `v<n>`). Each section is that release's notes. Versions 1 and 2 were released as Stratagems Unleashed, 3 to 7 as Flexible Stratagems.
+
+## V8 (unreleased)
+
+- Renamed Flexible Loadouts. Mod managers update it in place, and your Clear Stratagems key stays bound.
+- One file again: the Plus edition is gone.
+- A red X in the corner of each filled stratagem slot empties that slot. It fades in and out like the game's own buttons, and the slot under it stops showing its hover frame.
+- A REMOVE button at the top of your primary, secondary and grenade slots in the Hellpod loadout: checked, your Helldiver goes on missions without that weapon or grenades, while your loadout keeps them. The choice stays until you change it.
+- The Clear Stratagems key is now **Action**, and works with a controller: it empties the hovered or selected stratagem slot (no longer all four), flips the REMOVE box of the hovered or selected weapon or grenade slot, pins the hovered or selected stratagem in the list, and on the booster slot rolls a random lineup. With a controller, the selected slot shows its X or REMOVE button. Your binding stays.
+- Pinned stratagems: a pin on the stratagem under your cursor in the list. Pinned stratagems come first in their group (offensive, supply, defensive), and stay pinned between game sessions.
+- Randomize Lineup: a small button between your 4th stratagem slot and the booster fills the four slots, one by one, with one of three random lineups from the stratagems you own. It hides when you own too few stratagems for a real choice.
 
 ## V7 (2026-10-07)
 

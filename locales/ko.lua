@@ -1,8 +1,9 @@
 return {
-    mod = 'flexible_stratagems',
+    mod = 'flexible_loadouts',
     language = 'ko',
     strings = {
-        ['option.mod'] = 'Flexible Stratagems',
-        ['binding.clear'] = '스트라타젬 비우기',
+        ['option.mod'] = 'Flexible Loadouts',
+        ['binding.action'] = '액션',
+        ['button.remove'] = '제거',
     },
 }
